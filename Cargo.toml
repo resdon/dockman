@@ -1,0 +1,31 @@
+[package]
+name = "dockman"
+version = "0.1.0"
+edition = "2021"
+default-run = "dockman"
+
+[lib]
+name = "dockman_lib"
+path = "src/lib.rs"
+
+[dependencies]
+wayland-client = "0.31.14"
+wayland-protocols = { version = "0.32.9", features = ["client", "staging"] }
+smithay-client-toolkit = { version = "0.20.0" }
+
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
+
+sysinfo = "0.33"
+
+# Add this for your static caching maps:
+lazy_static = "1.5.0"
+
+# Add your image lookup dependencies from your proof-of-concept scripts:
+linicon = "2.3"
+image = "0.25"
+base64 = "0.22" # Required to encode the binary image bytes over the terminal stream
+sixel-rs = "0.5.0"
+icy_sixel = "0.5.0"
+walkdir = "2.5.0"
+resvg = "0.47.0"
+fontdue = "0.9.3"
