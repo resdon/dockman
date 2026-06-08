@@ -19,6 +19,8 @@ pub mod models {
 	    pub app_id: String,       
 	    pub is_activated: bool,
 	    pub is_minimized: bool,
+        pub icon_rgba: Option<Vec<u8>>, // Stores raw 32-bit pixel array
+        pub icon_size: u32,             // e.g., 48	    
 	    
     }
 }

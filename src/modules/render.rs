@@ -3,6 +3,8 @@
 use wayland_client::QueueHandle;
 use wayland_client::protocol::wl_shm;
 use smithay_client_toolkit::shell::WaylandSurface;
+use std::collections::HashMap;
+use dockman_lib::WindowDiagnostics;
 use crate::AppState;
 
 impl AppState {
@@ -47,8 +49,8 @@ impl AppState {
         }
 
         // 4. Render the layout elements cleanly
-        Self::render_windows(&self.open_windows, canvas, width, height);
-
+        Self::render_windows(canvas, width, height, &self.open_windows);
+        
         // 5. Explicitly update the Wayland surface backbuffers
         layer_surface.wl_surface().attach(Some(buffer.wl_buffer()), 0, 0);
         layer_surface.wl_surface().damage_buffer(0, 0, width as i32, height as i32);
@@ -59,82 +61,44 @@ impl AppState {
         println!("[RENDER] --- Frame Committed to Wayland ---");
     }
 
-    fn render_windows(
-        open_windows: &std::collections::HashMap<
-            wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
-            dockman_lib::WindowDiagnostics
-        >,
+	pub fn render_windows(
         canvas: &mut [u8],
         width: u32,
         height: u32,
+        open_windows: &HashMap<
+            smithay_client_toolkit::reexports::protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1,
+            WindowDiagnostics
+        >
     ) {
-        let box_size: usize = 32;
-        let padding: usize = 16;
-        
-        let start_y = (height as usize - box_size) / 2; 
-        let mut current_x = padding;
-
-        println!("[RENDER MAP CHECK] Size of open_windows HashMap: {}", open_windows.len());
-
-        for (handle, window) in open_windows {
-            // Log exactly what window we found and its state variables
-            println!(
-                "[RENDER LOOP] Found Window -> Handle: {:?}, App Name: '{}', Title: '{}', Active: {}, Minimized: {}", 
-                handle, window.app_name, window.title, window.is_activated, window.is_minimized
-            );
-
-            // Guardrail to prevent clipping past screen borders
-            if current_x + box_size > width as usize {
-                println!("[RENDER WARNING] Box skipped: X coordinate ({}) exceeds width limits", current_x + box_size);
-                break;
-            }
-
-            println!("[RENDER DRAWING] Drawing blue box at X: {}, Y: {}", current_x, start_y);
-
-            // === DRAW THE BLUE BOXES ===
-            for y in 0..box_size {
-                for x in 0..box_size {
-                    let canvas_x = current_x + x;
-                    let canvas_y = start_y + y;
-                    let pixel_idx = (canvas_y * (width as usize) + canvas_x) * 4;
-
-                    if pixel_idx + 3 < canvas.len() {
-                        canvas[pixel_idx]     = 0xFF; // Solid Blue
-                        canvas[pixel_idx + 1] = 0x44; // Green
-                        canvas[pixel_idx + 2] = 0x11; // Red
-                        canvas[pixel_idx + 3] = 0xFF; // Alpha
-                    }
+        // 1. Force clear background to charcoal dark gray (#FF111111)
+        for pixel in canvas.chunks_exact_mut(4) {
+            pixel[0] = 0x11; // Blue
+            pixel[1] = 0x11; // Green
+            pixel[2] = 0x11; // Red
+            pixel[3] = 0xFF; // Alpha
+        }
+    
+        // 2. FORCE PRINT THE MAP COUNT TO TERMINAL
+        println!("[RENDER ENGINE] Active Tracking Map Count = {}", open_windows.len());
+    
+        // 3. FORCE DRAW ONE SINGLE BLUE BOX DIRECTLY IN THE CENTER OF THE PANEL
+        let box_size: usize = 48;
+        let start_x: usize = 20; // Hardcoded horizontal location offset 
+        let start_y: usize = ((height as usize) - box_size) / 2; // Vertically centered
+    
+        for y in 0..box_size {
+            for x in 0..box_size {
+                let canvas_x = start_x + x;
+                let canvas_y = start_y + y;
+    
+                if canvas_x < width as usize && canvas_y < height as usize {
+                    let canvas_idx = (canvas_y * (width as usize) + canvas_x) * 4;
+                    canvas[canvas_idx] = 0xFF;     // Blue channel full max
+                    canvas[canvas_idx + 1] = 0x44; // Green
+                    canvas[canvas_idx + 2] = 0x11; // Red
+                    canvas[canvas_idx + 3] = 0xFF; // Alpha channel solid opaque
                 }
             }
-
-            // === DRAW DASH INDICATORS UNDERNEATH ACTIVE WINDOWS ===
-            if window.is_activated {
-                let dash_width = 16;
-                let dash_height = 4;
-                
-                let dash_start_y = start_y + box_size + 3;
-                let dash_start_x = current_x + ((box_size - dash_width) / 2);
-
-                println!("[RENDER DRAWING] Window is active! Drawing white dash at X: {}, Y: {}", dash_start_x, dash_start_y);
-
-                for dy in 0..dash_height {
-                    for dx in 0..dash_width {
-                        let canvas_x = dash_start_x + dx;
-                        let canvas_y = dash_start_y + dy;
-                        let pixel_idx = (canvas_y * (width as usize) + canvas_x) * 4;
-
-                        if pixel_idx + 3 < canvas.len() {
-                            canvas[pixel_idx]     = 0xFF; // Blue
-                            canvas[pixel_idx + 1] = 0xFF; // Green
-                            canvas[pixel_idx + 2] = 0xFF; // Red
-                            canvas[pixel_idx + 3] = 0xFF; // Alpha
-                        }
-                    }
-                }
-            }
-
-            // Step cursor forward for subsequent windows layout slotting
-            current_x += box_size + padding;
         }
     }
 }

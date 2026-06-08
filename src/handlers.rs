@@ -24,8 +24,21 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::{
 };
 
 use crate::AppState;
-use crate::modules::window_manager::{TrackedWindow, parse_window_states};
-use crate::WindowDiagnostics;
+use dockman_lib::models::WindowDiagnostics; // FIXED: Point straight to dockman_lib model paths
+
+// Quick custom state flag parser to remove the broken crate::modules::window_manager dependency
+fn parse_window_states(state_bytes: &[u8]) -> (bool, bool) {
+    let mut activated = false;
+    let mut minimized = false;
+    for chunk in state_bytes.chunks_exact(4) {
+        if let Ok(bytes) = chunk.try_into() {
+            let value = u32::from_ne_bytes(bytes);
+            if value == 3 { activated = true; } // ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_ACTIVATED
+            if value == 4 { minimized = true; } // ZWLR_FOREIGN_TOPLEVEL_HANDLE_V1_STATE_MINIMIZED
+        }
+    }
+    (activated, minimized)
+}
 
 // =========================================================================
 // Registry Handler to Bind Globals
@@ -35,33 +48,14 @@ impl RegistryHandler<AppState> for AppState {
         data: &mut AppState,
         _conn: &Connection,
         qh: &QueueHandle<AppState>,
-        name: u32,
+        _name: u32, // Prefixed with underscore to fix unused variable warning
         interface: &str,
         version: u32,
     ) {
         eprintln!("[DEBUG] Global detected: {} (v{})", interface, version);       
-		if interface == "zwlr_foreign_toplevel_manager_v1" {
-            // 1. Cap version to a safe max range boundary (usually 3)
-            let safe_max_version = std::cmp::min(version, 3);            
-            // 2. Bind all matching instances within a stable range (v1 up to safe_max_version)
-            let manager = data.registry_state
-                .bind_all::<ZwlrForeignToplevelManagerV1, _, _, _>(
-                    qh, 
-                    1..=safe_max_version, 
-
-                    |_| ()
-                )
-                .ok()
-                .and_then(|mut vec| vec.pop()) // Pop the first successfully bound instance
-                .expect("Failed to bind toplevel manager within stable version range");
-
-            data.toplevel_manager = Some(manager);
-            eprintln!("[DEBUG] Successfully bound zwlr_foreign_toplevel_manager_v1 within range 1..={}", safe_max_version);
-        }
     }   
     fn remove_global(_data: &mut AppState, _conn: &Connection, _qh: &QueueHandle<AppState>, _name: u32, _interface: &str) {}
 }
-
 
 // =========================================================================
 // Existing SCTK Registry Glue Implementations
@@ -81,23 +75,19 @@ impl CompositorHandler for AppState {
     fn transform_changed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &wayland_client::protocol::wl_surface::WlSurface, _: Transform) {}
 }
 
-// Inside src/modules/handlers.rs
 impl LayerShellHandler for AppState {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {}
     
     fn configure(&mut self, _: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {
-        // Update dimensions based on what the compositor told us
         self.width = configure.new_size.0.max(100);
         self.height = 60;
         
         layer.set_size(self.width, self.height);
         layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
         
-        // This is where drawing safely happens!
         self.draw(qh); 
     }
 }
-
 
 impl ShmHandler for AppState {
     fn shm_state(&mut self) -> &mut Shm {
@@ -131,18 +121,27 @@ delegate_layer!(AppState);
 delegate_shm!(AppState);
 delegate_seat!(AppState);
 
+
 // =========================================================================
 // Foreign Toplevel Event Delegates
 // =========================================================================
+// A. Update the Manager Dispatch block header back to ():
+impl wayland_client::Dispatch<ZwlrForeignToplevelManagerV1, ()> for AppState {
+    
+    // =========================================================================
+    // CRITICAL FIX: Intercept opcode 0 and map spawned handle child types!
+    // =========================================================================
+    wayland_client::event_created_child!(AppState, ZwlrForeignToplevelManagerV1, [
+        0 => (ZwlrForeignToplevelHandleV1, ()) // Opcode 0 spawns handles with () user data
+    ]);
 
-impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for AppState {
     fn event(
         state: &mut Self,
         _proxy: &ZwlrForeignToplevelManagerV1,
-        event: <ZwlrForeignToplevelManagerV1 as Proxy>::Event,
+        event: <ZwlrForeignToplevelManagerV1 as wayland_client::Proxy>::Event,
         _data: &(),
-        _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        _conn: &wayland_client::Connection,
+        _qh: &wayland_client::QueueHandle<Self>,
     ) {
         eprintln!("[DEBUG] Toplevel Manager event received");
         if let zwlr_foreign_toplevel_manager_v1::Event::Toplevel { toplevel: handle } = event {
@@ -153,33 +152,35 @@ impl Dispatch<ZwlrForeignToplevelManagerV1, ()> for AppState {
     }
 }
 
-// Event processing arm of wayland stream
-// Inside src/modules/handlers.rs
+// B. Update the Handle Dispatch block header back to ():
 impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
     fn event(
         state: &mut Self,
         handle: &ZwlrForeignToplevelHandleV1,
         event: <ZwlrForeignToplevelHandleV1 as Proxy>::Event,
-        _data: &(),
+        _data: &(), // Changed back to ()
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        // --- ADD THIS LOG BLOCK TO THE ABSOLUTE TOP OF THE DISPATCH FUNCTION ---
         println!("[WAYLAND TRACKER EVENT ARRIVED] Got event: {:?}", event);
 
-        // Ensure the tracking structure exists inside the collection map
         state.open_windows.entry(handle.clone()).or_default();
 
-        match &event {
+        match event {
             zwlr_foreign_toplevel_handle_v1::Event::Closed => {
                 println!("[WAYLAND DETECTOR] Window Closed: {:?}", handle);
                 state.open_windows.remove(handle);
                 state.draw(qh);
-                return;
             }
             zwlr_foreign_toplevel_handle_v1::Event::Done => {
                 state.draw(qh);
-                return;
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
+                println!("[WAYLAND DETECTOR] Title changed: {}", title);
+                if let Some(window) = state.open_windows.get_mut(handle) {
+                    window.title = title;
+                }
+                state.draw(qh);
             }
             zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
                 println!("[WAYLAND DETECTOR] AppId registered string payload: '{}'", app_id);
@@ -187,8 +188,32 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
                     window.app_id = app_id.clone();
                     window.app_name = app_id.clone();
                     
-                    // Run a simple fallback verification assignment without the full lib loop
-                    window.icon_rgba = None; 
+                    let cleaned_app_id = app_id.trim();
+                    if !cleaned_app_id.is_empty() {
+                        let icon_name = dockman_lib::icon_utils::extract_icon_name_from_desktop_file(cleaned_app_id);
+                        let icon_path = dockman_lib::icon_utils::locate_actual_icon_path(&icon_name, cleaned_app_id);
+
+                        let mut raw_pixels = None;
+                        let target_size = 48;
+
+                        if let Some(path) = icon_path {
+                            if let Some((_, _, rgba_data)) = dockman_lib::terminal_graphics::load_image_raw_rgba(&path, target_size) {
+                                raw_pixels = Some(rgba_data);
+                            }
+                        }
+
+                        window.icon_name = icon_name;
+                        window.icon_rgba = raw_pixels;
+                        window.icon_size = target_size;
+                    }
+                }
+                state.draw(qh);
+            }
+            zwlr_foreign_toplevel_handle_v1::Event::State { state: state_bytes } => {
+                let (activated, minimized) = parse_window_states(&state_bytes);
+                if let Some(window) = state.open_windows.get_mut(handle) {
+                    window.is_activated = activated;
+                    window.is_minimized = minimized;
                 }
                 state.draw(qh);
             }
@@ -196,5 +221,4 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
         }
     }
 }
-
 
