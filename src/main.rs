@@ -1,4 +1,7 @@
-use dockman_lib::models::WindowDiagnostics;
+pub mod lib;
+
+use crate::lib::models::WindowDiagnostics;
+
 
 use smithay_client_toolkit::registry::ProvidesRegistryState;
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -16,12 +19,15 @@ use wayland_client::protocol::{wl_pointer::WlPointer, wl_seat::WlSeat};
 use wayland_client::Connection;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
+use wayland_client::backend::ObjectId;
 
 use std::collections::HashMap;
 
 // 1. Mount the files as local root modules
-mod handlers;
-mod render;
+pub mod handlers;
+pub mod render;
+
+use handlers::*;
 
 // 2. Mock FontManager structure to fix E0425 and E0433
 pub struct FontManager;
@@ -30,6 +36,7 @@ impl FontManager {
 }
 
 pub struct AppState {
+	pub connection: Connection,
     pub registry_state: RegistryState,
     pub compositor_state: CompositorState,
     pub output_state: OutputState,
@@ -46,7 +53,7 @@ pub struct AppState {
     pub wl_seat: Option<WlSeat>,
     pub wl_pointer: Option<WlPointer>,
     pub pointer_x: usize,
-    pub open_windows: HashMap<ZwlrForeignToplevelHandleV1, WindowDiagnostics>,
+    pub open_windows: HashMap<ObjectId, WindowDiagnostics>,
 }
 
 // =========================================================================
@@ -54,7 +61,7 @@ pub struct AppState {
 // =========================================================================
 // Replace the `impl AppState` block inside src/main.rs with this:
 impl AppState {
-    pub fn draw(&mut self, qh: &wayland_client::QueueHandle<Self>) {
+    pub fn draw(&mut self, _qh: &wayland_client::QueueHandle<Self>) {
         let width = self.width;
         let height = self.height;
 
@@ -82,6 +89,7 @@ impl AppState {
 }
 
 fn main() {
+	let connection = Connection::connect_to_env().expect("Failed to connect");
     println!("[DEBUG] Starting dock...");
     let conn = Connection::connect_to_env().expect("Failed to connect to Wayland display");
     println!("[DEBUG] Connected to Wayland.");
@@ -101,6 +109,7 @@ fn main() {
     let font_bytes = std::fs::read("font.ttf").unwrap_or_else(|_| vec![0; 100]);
 
     let mut state = AppState {
+    	connection,
         registry_state,
         compositor_state,
         output_state,
@@ -144,14 +153,19 @@ fn main() {
     // ... Rest of your layer_surface allocation and blocking_dispatch loop code continues exactly the same
 
     let raw_surface = state.compositor_state.create_surface(&qh);
-    let layer_surface = state.layer_shell.create_layer_surface(
-        &qh,
-        raw_surface,
-        Layer::Top,
-        Some("dock_panel"),
-        None,
-    );
+	let layer_surface = state.layer_shell.create_layer_surface(
+	    &qh,
+	    raw_surface,
+	    Layer::Top,
+	    Some("dock_panel"),
+	    None,
+	);
 
+	// ADD THIS LINE: This tells the compositor not to focus the dock on click
+	layer_surface.set_keyboard_interactivity(
+	    smithay_client_toolkit::shell::wlr_layer::KeyboardInteractivity::None
+	);
+	
     layer_surface.set_size(540, 60);
     layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
     layer_surface.wl_surface().commit(); 

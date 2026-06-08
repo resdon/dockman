@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use dockman_lib::models::WindowDiagnostics;
+use crate::lib::models::WindowDiagnostics;
 use smithay_client_toolkit::reexports::protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
 // Standalone function cleanly exposed to your crate root
@@ -7,7 +7,7 @@ pub fn render_windows(
     canvas: &mut [u8],
     width: u32,
     height: u32,
-    open_windows: &HashMap<ZwlrForeignToplevelHandleV1, WindowDiagnostics>
+    open_windows: &HashMap<wayland_client::backend::ObjectId, WindowDiagnostics>
 ) {
     // 1. Clear background to dark gray charcoal panel skin (#FF111111)
     for pixel in canvas.chunks_exact_mut(4) {

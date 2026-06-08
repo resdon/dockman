@@ -1,28 +1,62 @@
+// src/lib.rs
+
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use walkdir::WalkDir;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use linicon::lookup_icon;
+// Add this to the top of src/models.rs
+use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
-// Re-exports for a clean public API
-pub use crate::models::WindowDiagnostics;
+pub use self::models::WindowDiagnostics;
 
 pub mod models {
-    #[derive(Default, Clone, Debug)]
-    pub struct WindowDiagnostics {
-        pub app_name: String,
-        pub title: String,
-        pub matched_pid: Option<u32>,
-        pub icon_name: String,
-        pub terminal_icon_code: String,
+	use super::ZwlrForeignToplevelHandleV1;
+
+	#[derive(PartialEq, Clone, Copy, Debug)]
+	pub enum LastState {
+	    None,
+	    ReceivedFocus,
+	    ReportedInactive,
+	}
+
+	#[derive(Clone, Debug)] // Removed Default
+	pub struct WindowDiagnostics {
+	    pub app_name: String,
+	    pub title: String,
+	    pub matched_pid: Option<u32>,
+	    pub icon_name: String,
+	    pub terminal_icon_code: String,
 	    pub app_id: String,       
 	    pub is_activated: bool,
 	    pub is_minimized: bool,
-        pub icon_rgba: Option<Vec<u8>>, // Stores raw 32-bit pixel array
-        pub icon_size: u32,             // e.g., 48	    
-	    
-    }
+	    pub icon_rgba: Option<Vec<u8>>,
+	    pub icon_size: u32,
+	    pub handle: ZwlrForeignToplevelHandleV1,
+	    pub last_state: LastState,
+	    pub is_pending: bool,
+	}
+
+	impl WindowDiagnostics {
+	    pub fn new(handle: ZwlrForeignToplevelHandleV1) -> Self {
+	        Self {
+	            app_name: "Unknown".to_string(),
+	            title: "Unknown".to_string(),
+	            matched_pid: None,
+	            icon_name: "".to_string(),
+	            terminal_icon_code: "".to_string(),
+	            app_id: "".to_string(),
+	            is_activated: false,
+	            is_minimized: false,
+	            icon_rgba: None,
+	            icon_size: 48,
+	            handle, // Initialize with the passed handle
+	            last_state: LastState::None,
+	            is_pending: false,
+	        }
+	    }
+	}
 }
 
 pub mod icon_utils {
@@ -125,7 +159,7 @@ pub mod terminal_graphics {
     }
 
     pub fn generate_terminal_image_string(icon_name: &str, app_id: &str, target_size: u32) -> String {
-        let icon_path = match crate::icon_utils::locate_actual_icon_path(icon_name, app_id) {
+        let icon_path = match super::icon_utils::locate_actual_icon_path(icon_name, app_id) {
             Some(path) => path,
             None => return "📁 [No Icon Found]".to_string(),
         };
