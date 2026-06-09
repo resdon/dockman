@@ -1,6 +1,5 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use crate::lib::models::WindowDiagnostics;
-use smithay_client_toolkit::reexports::protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
 use crate::{MenuState, HoverState, FontManager};
 
@@ -20,8 +19,8 @@ pub fn draw_text(
         let (metrics, bitmap) = font.rasterize(c, size);
         for y in 0..metrics.height {
             for x in 0..metrics.width {
-                let canvas_x = x_offset + x + metrics.xmin as usize;
-                let canvas_y = start_y + y + (size as usize - metrics.height - metrics.ymin as usize);
+                let canvas_x = (x_offset as isize + x as isize + metrics.xmin as isize) as usize;
+                let canvas_y = (start_y as isize + y as isize + (size as isize - metrics.height as isize - metrics.ymin as isize)) as usize;
 
                 if canvas_x < canvas_width as usize && canvas_y < canvas_height as usize {
                     let canvas_idx = (canvas_y * canvas_width as usize + canvas_x) * 4;
@@ -52,7 +51,7 @@ pub fn render_windows(
     font_manager: &FontManager,
 ) {
     // 1. Clear background
-    let dock_height = 60;
+    let dock_height = DOCK_HEIGHT as usize;
     for y in 0..height as usize {
         for x in 0..width as usize {
             let canvas_idx = (y * (width as usize) + x) * 4;
@@ -149,11 +148,15 @@ pub fn render_windows(
         }
     }
 
+use crate::modules::context_menu::{MENU_WIDTH, MENU_HEIGHT, MENU_ITEM_HEIGHT, get_hover_menu_bounds, HOVER_ITEM_HEIGHT, DOCK_HEIGHT};
+// ... rest of imports
+
+// ... inside render_windows, section 5
     // 4. Render Context Menu
     if menu_state.is_open {
-        let menu_width = 150;
-        let menu_height = 150;
-        let menu_x = menu_state.x.min(width as usize - menu_width);
+        let menu_width = MENU_WIDTH as usize;
+        let menu_height = MENU_HEIGHT as usize;
+        let menu_x = menu_state.x.min((width as usize).saturating_sub(menu_width));
         let menu_y = menu_state.y.saturating_sub(menu_height);
 
         for y in 0..menu_height {
@@ -166,10 +169,10 @@ pub fn render_windows(
                 }
             }
         }
-        // Draw 5 items
-        let item_h = menu_height / 5;
+        // Draw items
+        let item_h = MENU_ITEM_HEIGHT as usize;
         let is_pinned = menu_state.target_app_id.as_ref().map(|id| pinned_apps.contains(id)).unwrap_or(false);
-        let actions = ["Focus", "Minimize", "Close", if is_pinned { "Unpin" } else { "Pin" }, "Open new"];
+        let actions = ["Focus", "Open new", "Minimize", "Close", if is_pinned { "Unpin" } else { "Pin" }];
 
         for (i, label) in actions.iter().enumerate() {
             draw_text(canvas, width, height, &font_manager.font, label, 14.0, menu_x + 10, menu_y + 5 + i * item_h, (255, 255, 255));
@@ -190,11 +193,9 @@ pub fn render_windows(
     if hover_state.is_visible && !menu_state.is_open {
         if let Some(ref app_id) = hover_state.app_id {
             if let Some(windows) = running_by_app.get(app_id) {
-                let menu_width = 200;
-                let item_h = 30;
-                let menu_height = windows.len() * item_h;
-                let menu_x = hover_state.x.saturating_sub(menu_width / 2).min((width as usize).saturating_sub(menu_width));
-                let menu_y = (height as usize - dock_height).saturating_sub(menu_height + 10);
+                let (menu_x, menu_y, menu_width, menu_height) = get_hover_menu_bounds(
+                    hover_state.x, width, height, windows.len()
+                );
 
                 for y in 0..menu_height {
                     for x in 0..menu_width {
@@ -207,6 +208,7 @@ pub fn render_windows(
                     }
                 }
 
+                let item_h = HOVER_ITEM_HEIGHT as usize;
                 for (i, w) in windows.iter().enumerate() {
                     let title = if w.title.chars().count() > 20 { 
                         format!("{}...", w.title.chars().take(17).collect::<String>()) 

@@ -2,8 +2,7 @@ pub mod lib;
 
 use crate::lib::models::WindowDiagnostics;
 
-
-use smithay_client_toolkit::registry::ProvidesRegistryState;
+use wayland_client::Dispatch;
 use smithay_client_toolkit::shell::WaylandSurface;
 use smithay_client_toolkit::{
     compositor::CompositorState,
@@ -17,20 +16,17 @@ use smithay_client_toolkit::{
 use wayland_client::globals::registry_queue_init;
 use wayland_client::protocol::{wl_pointer::WlPointer, wl_seat::WlSeat};
 use wayland_client::Connection;
-use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 use wayland_client::backend::ObjectId;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 
 // 1. Mount the files as local root modules
 pub mod handlers;
 pub mod render;
-pub mod modules {
-    pub mod persistence;
-}
+pub mod modules;
 
-use handlers::*;
+// ...
 use modules::persistence;
 
 // 2. Mock FontManager structure to fix E0425 and E0433
@@ -85,91 +81,89 @@ pub struct AppState {
     pub hover_state: HoverState,
     pub last_interact_time: std::time::Instant,
     pub needs_redraw: bool,
+    pub last_mouse_pos: Option<(f64, f64)>,
 }
 
-// =========================================================================
-// Add the missing .draw() orchestration method to bridge render.rs
-// =========================================================================
-// Replace the `impl AppState` block inside src/main.rs with this:
 impl AppState {
-    pub fn draw(&mut self, _qh: &wayland_client::QueueHandle<Self>) {
+    pub fn draw(&mut self, qh: &wayland_client::QueueHandle<Self>) {
         let box_size = 48;
         let spacing = 12;
-        
-        // Group running windows by app_id
-        let mut apps_in_dock = Vec::new();
-        let mut running_by_app: HashMap<String, Vec<ObjectId>> = HashMap::new();
-        
-        // Use pinned apps as the base order
-        for app_id in &self.pinned_apps {
-            apps_in_dock.push(app_id.clone());
+        let max_dock_width = 800; // Hard limit for your screen
+
+        // Grouping logic
+        let mut apps_in_dock: Vec<String> = self.pinned_apps.clone();
+        for id in self.open_windows.values().map(|w| w.app_id.clone()) {
+            if !apps_in_dock.contains(&id) { apps_in_dock.push(id); }
         }
-        
-        for (id, win) in &self.open_windows {
-            running_by_app.entry(win.app_id.clone()).or_insert_with(Vec::new).push(id.clone());
-            if !apps_in_dock.contains(&win.app_id) {
-                apps_in_dock.push(win.app_id.clone());
-            }
-        }
-        
+
+        // Calculate dynamic width, but clamp to max_dock_width
         let total_items = apps_in_dock.len();
-        
-        // Calculate required width based on icons, but maintain a minimum width
-        let content_width = if total_items > 0 {
+        let calculated_width = if total_items > 0 {
             (total_items * box_size + (total_items + 1) * spacing) as u32
-        } else {
-            100 // Minimal width for empty dock
-        };
+        } else { 100 };
+        
+        self.width = calculated_width.min(max_dock_width); 
+        self.height = if self.menu_state.is_open || self.hover_state.is_visible { 200 } else { 60 };
 
-        // Increase height if menu or hover is open
-        let target_height = if self.menu_state.is_open || self.hover_state.is_visible { 200 } else { 60 };
-
-        // If the surface size needs to change, update it
-        if content_width != self.width || target_height != self.height {
-            self.width = content_width;
-            self.height = target_height;
-            if let Some(ref surface) = self.layer_surface {
-                surface.set_size(self.width, self.height);
-                surface.wl_surface().commit();
-            }
+        if let Some(ref surface) = self.layer_surface {
+            surface.set_size(self.width, self.height);
+            let compositor = self.compositor_state.wl_compositor();
+            let region = compositor.create_region(qh, ());
+            region.add(0, 0, self.width as i32, self.height as i32);
+            surface.wl_surface().set_input_region(Some(&region));
+            surface.wl_surface().commit();
         }
 
-        let width = self.width;
-        let height = self.height;
-
-        // FIXED: Use the correct wayland_client path for Shm color configurations
+        // 4. Create buffer and draw
         let (buffer, canvas) = self.pool
             .create_buffer(
-                width as i32, 
-                height as i32, 
-                (width * 4) as i32, 
+                self.width as i32,
+                self.height as i32,
+                (self.width * 4) as i32,
                 wayland_client::protocol::wl_shm::Format::Argb8888
             )
-            .expect("Failed to create layout backing memory buffer");
+            .expect("Failed to create layout buffer");
 
-        // Execute your local render loop code!
         render::render_windows(
-            canvas, width, height, 
-            &self.open_windows, 
-            &self.pinned_apps, 
-            &self.icon_cache, 
+            canvas, self.width, self.height,
+            &self.open_windows,
+            &self.pinned_apps,
+            &self.icon_cache,
             &self.menu_state,
             &self.hover_state,
             &self.font_manager
         );
 
+        // 5. Commit the buffer
         if let Some(ref surface) = self.layer_surface {
-            buffer.attach_to(surface.wl_surface()).expect("Failed to blit surface memory buffer");
-            surface.wl_surface().damage_buffer(0, 0, width as i32, height as i32);
+            buffer.attach_to(surface.wl_surface()).expect("Buffer attach failed");
+            surface.wl_surface().damage_buffer(0, 0, self.width as i32, self.height as i32);
             surface.wl_surface().commit();
         }
 
         self.current_buffer = Some(buffer);
+        self.connection.flush().expect("Flush failed");
     }
 }
 
+impl Dispatch<wayland_client::protocol::wl_region::WlRegion, ()> for AppState {
+    fn event(
+        _state: &mut Self,
+        _proxy: &wayland_client::protocol::wl_region::WlRegion,
+        _event: <wayland_client::protocol::wl_region::WlRegion as wayland_client::Proxy>::Event,
+        _data: &(),
+        _conn: &wayland_client::Connection,
+        _qhandle: &wayland_client::QueueHandle<Self>,
+    ) {
+        // WlRegion has no events, so this body can remain empty.
+    }
+}
+// =========================================================================
+// Add the missing .draw() orchestration method to bridge render.rs
+// =========================================================================
+// Replace the `impl AppState` block inside src/main.rs with this:
+
 fn main() {
-	let connection = Connection::connect_to_env().expect("Failed to connect");
     println!("[DEBUG] Starting dock...");
     let conn = Connection::connect_to_env().expect("Failed to connect to Wayland display");
     println!("[DEBUG] Connected to Wayland.");
@@ -191,7 +185,7 @@ fn main() {
         .unwrap_or_else(|_| vec![0; 100]);
 
     let mut state = AppState {
-    	connection,
+    	connection: conn.clone(),
         registry_state,
         compositor_state,
         output_state,
@@ -227,6 +221,7 @@ fn main() {
         },
         last_interact_time: std::time::Instant::now(),
 		needs_redraw: false,
+		last_mouse_pos: None,
     };
 
     // =========================================================================
@@ -267,7 +262,7 @@ fn main() {
 	);
 	
     layer_surface.set_size(540, 60);
-    layer_surface.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
+    layer_surface.set_anchor(Anchor::BOTTOM);
     layer_surface.wl_surface().commit(); 
     state.layer_surface = Some(layer_surface);
 

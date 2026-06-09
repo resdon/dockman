@@ -1,6 +1,5 @@
 use std::fs;
 use std::collections::HashSet;
-use std::path::Path;
 
 fn get_config_dir() -> String {
     let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());

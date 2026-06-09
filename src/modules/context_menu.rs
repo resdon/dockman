@@ -1,14 +1,37 @@
 use crate::modules::world::World;
 use resvg::tiny_skia::{Pixmap, Rect};
 
-/// Renders a context menu with three items: Open, Close, Pin/Unpin.
+pub const MENU_WIDTH: u32 = 120;
+pub const MENU_HEIGHT: u32 = 150; // Increased to accommodate 5 potential items
+pub const MENU_ITEM_COUNT: u32 = 5;
+pub const MENU_ITEM_HEIGHT: u32 = MENU_HEIGHT / MENU_ITEM_COUNT;
+
+pub const HOVER_MENU_WIDTH: u32 = 200;
+pub const HOVER_ITEM_HEIGHT: u32 = 30;
+pub const DOCK_HEIGHT: u32 = 60;
+
+pub fn get_hover_menu_bounds(
+    x: usize,
+    width: u32,
+    height: u32,
+    windows_count: usize,
+) -> (usize, usize, usize, usize) {
+    let menu_width = HOVER_MENU_WIDTH as usize;
+    let menu_height = windows_count * HOVER_ITEM_HEIGHT as usize;
+    let menu_x = x.saturating_sub(menu_width / 2).min((width as usize).saturating_sub(menu_width));
+    // DOCK_HEIGHT is 60. Menu is placed above the dock.
+    let menu_y = (height as usize - DOCK_HEIGHT as usize).saturating_sub(menu_height + 10);
+    (menu_x, menu_y, menu_width, menu_height)
+}
+
+/// Renders a context menu with items.
 /// Returns a tuple of (menu_pixmap, item_rects) where item_rects are in menu-local coordinates.
 pub fn render_context_menu(
     world: &mut World,
-    width: u32,
-    height: u32,
     is_pinned: bool,
 ) -> (Pixmap, Vec<Rect>) {
+    let width = MENU_WIDTH;
+    let height = MENU_HEIGHT;
     // Create a raw RGBA buffer for the menu
     let mut frame: Vec<u8> = vec![0; (width * height * 4) as usize];
 
@@ -22,13 +45,15 @@ pub fn render_context_menu(
 
     // Menu items
     let items = [
-        "Open".to_string(),
-        "Close".to_string(), 
+        "Focus".to_string(),
+        "Open".to_string(), 
+        "Minimize".to_string(),
+        "Close".to_string(),
         if is_pinned { "Unpin".to_string() } else { "Pin".to_string() },
     ];
 
     let text_size = 14.0;
-    let item_height = height / items.len() as u32;
+    let item_height = MENU_ITEM_HEIGHT;
 
     let mut item_rects = Vec::new();
 

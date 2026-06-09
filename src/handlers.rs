@@ -1,8 +1,7 @@
-use std::collections::{HashMap, HashSet};
+use crate::modules::context_menu::{MENU_WIDTH, MENU_HEIGHT, MENU_ITEM_HEIGHT, get_hover_menu_bounds};
+use std::collections::HashMap;
 pub use crate::lib::models::LastState;
 use crate::lib::models::WindowDiagnostics;
-use crate::lib::icon_utils;
-use crate::lib::terminal_graphics;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler},
@@ -18,8 +17,6 @@ use smithay_client_toolkit::{
     shm::{Shm, ShmHandler},
 };
 use wayland_client::event_created_child;
-use std::sync::Arc;
-use wayland_client::backend::ObjectData;
 use wayland_client::{
     protocol::{
         wl_output::{Transform, WlOutput},
@@ -92,16 +89,20 @@ impl LayerShellHandler for AppState {
     fn closed(&mut self, _: &Connection, _: &QueueHandle<Self>, _: &LayerSurface) {}
 
     fn configure(&mut self, _: &Connection, qh: &QueueHandle<Self>, layer: &LayerSurface, configure: LayerSurfaceConfigure, _: u32) {
+        // Capture the structural allocations chosen by sctk/compositor
         self.width = configure.new_size.0.max(100);
-        self.height = 60;
+        
+        // Dynamically track what our height should be based on UI overlays
+        let target_height = if self.menu_state.is_open || self.hover_state.is_visible { 200 } else { 60 };
+        self.height = target_height;
 
         layer.set_size(self.width, self.height);
         layer.set_anchor(Anchor::BOTTOM | Anchor::LEFT | Anchor::RIGHT);
 
+        // Render the buffer configuration cleanly inside the correct dimensions
         self.draw(qh);
     }
 }
-
 impl ShmHandler for AppState {
     fn shm_state(&mut self) -> &mut Shm {
         &mut self.shm_state
@@ -145,10 +146,6 @@ impl SeatHandler for AppState {
         }
     }
 }
-
-// =========================================================================
-// Pointer Interaction Tracking Logic
-// =========================================================================
 // =========================================================================
 // Corrected Pointer Interaction Tracking Logic
 // =========================================================================
@@ -160,242 +157,256 @@ impl PointerHandler for AppState {
         _pointer: &wayland_client::protocol::wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
+		// --- GRACE PERIOD CHECK ---
+        if let Some(leave_time) = self.hover_state.last_leave_time {
+            if leave_time.elapsed().as_millis() > 10 { 
+                self.menu_state.is_open = false;
+                self.hover_state.is_visible = false;
+                self.hover_state.last_leave_time = None;
+                self.draw(qh); // Trigger redraw after state collapse
+            }
+        }    	
+        if events.is_empty() { return; }
+
+        self.last_interact_time = std::time::Instant::now(); // Update interaction time
+        
+        let mut layer_changed = false;
+
+        // --- STEP 1: Parse the Frame Packet & Clear Leave Timestamp ---
         for event in events {
-            self.last_interact_time = std::time::Instant::now(); // Update interaction time
-            self.pointer_x = event.position.0 as usize;
-            self.pointer_y = event.position.1 as usize;
-
-            let box_size = 48;
-            let spacing = 12;
-            let dock_height = 60;
-
-            // Recalculate layout (must match render.rs)
-            let mut apps_in_dock = Vec::new();
-            let mut running_by_app: HashMap<String, Vec<ObjectId>> = HashMap::new();
-            for app_id in &self.pinned_apps { apps_in_dock.push(app_id.clone()); }
-            let mut sorted_windows: Vec<(&ObjectId, &WindowDiagnostics)> = self.open_windows.iter().collect();
-            sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
-            for (id, win) in &sorted_windows {
-                running_by_app.entry(win.app_id.clone()).or_insert_with(Vec::new).push((*id).clone());
-                if !apps_in_dock.contains(&win.app_id) { apps_in_dock.push(win.app_id.clone()); }
+            match event.kind {
+                PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
+                    self.pointer_x = event.position.0 as usize;
+                    self.pointer_y = event.position.1 as usize;
+                    self.hover_state.last_leave_time = None; // FIX: Reset timer on safe entry/motion
+                }
+                PointerEventKind::Leave { .. } => {
+					// Instead of immediate collapse, set a timestamp
+					self.hover_state.last_leave_time = Some(std::time::Instant::now());
+                }
+                _ => {}
             }
-            let total_items = apps_in_dock.len();
-            let content_width = if total_items > 0 { total_items * box_size + (total_items + 1) * spacing } else { 0 };
-            let start_offset_x = if (self.width as usize) > content_width { (self.width as usize - content_width) / 2 } else { 0 };
+        }
 
-            if let PointerEventKind::Motion { .. } = event.kind {
-                let mut found_hover = false;
-                if self.pointer_y >= (self.height as usize - dock_height) {
-                    for (index, app_id) in apps_in_dock.iter().enumerate() {
-                        let start_x = start_offset_x + spacing + index * (box_size + spacing);
-                        let end_x = start_x + box_size;
-                        if self.pointer_x >= start_x && self.pointer_x <= end_x {
-                            self.hover_state.is_visible = true;
-                            self.hover_state.x = start_x + box_size / 2;
-                            self.hover_state.app_id = Some(app_id.clone());
-                            found_hover = true;
-                            break;
-                        }
+        // --- STEP 2: Unified Layout Metrics (Must perfectly mirror render.rs) ---
+        let current_surface_height = self.height as usize; 
+        let dock_height = 60; 
+        let box_size = 48; 
+        let spacing = 12; 
+
+        let mut apps_in_dock = Vec::new(); 
+        let mut running_by_app: HashMap<String, Vec<ObjectId>> = HashMap::new(); 
+        
+        for app_id in &self.pinned_apps { apps_in_dock.push(app_id.clone()); } 
+        let mut sorted_windows: Vec<(&ObjectId, &WindowDiagnostics)> = self.open_windows.iter().collect(); 
+        sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name)); 
+        
+        for (id, win) in &sorted_windows {
+            running_by_app.entry(win.app_id.clone()).or_insert_with(Vec::new).push((*id).clone()); 
+            if !apps_in_dock.contains(&win.app_id) { apps_in_dock.push(win.app_id.clone()); } 
+        }
+        
+        let total_items = apps_in_dock.len(); 
+        let content_width = if total_items > 0 { total_items * box_size + (total_items + 1) * spacing } else { 0 }; 
+        let start_offset_x = if (self.width as usize) > content_width { (self.width as usize - content_width) / 2 } else { 0 }; 
+        
+        let dock_top_bound = current_surface_height.saturating_sub(dock_height);
+
+		// --- STEP 3: Unified Hover Logic (Fixed Blinking & Menu Navigation) ---
+        let mut should_be_visible = false;
+        let mut new_app_id = None;
+        let mut new_x = self.hover_state.x;
+
+        // FIX: Accept both expanded 200px and unexpanded 60px layouts to prevent race conditions during resize transitions
+        let is_over_icons = self.pointer_y >= dock_top_bound || (current_surface_height == 200 && self.pointer_y <= 60);
+
+        if is_over_icons {
+            for (index, app_id) in apps_in_dock.iter().enumerate() {
+                let start_x = start_offset_x + spacing + index * (box_size + spacing);
+                let end_x = start_x + box_size;
+                
+                if self.pointer_x >= start_x && self.pointer_x <= end_x {
+                    should_be_visible = true;
+                    new_x = start_x + box_size / 2;
+                    new_app_id = Some(app_id.clone());
+                    break;
+                }
+            }
+        }
+
+        // FIX: If not hovering dock icons directly, evaluate if pointer is browsing inside the Hover Preview Window bounds
+        if !should_be_visible && self.hover_state.is_visible {
+            if let Some(ref app_id) = self.hover_state.app_id {
+                if let Some(windows) = running_by_app.get(app_id) {
+                    let (menu_x, menu_y, menu_width, menu_height) = get_hover_menu_bounds(
+                        self.hover_state.x, self.width, self.height, windows.len()
+                    );
+                    
+                    if self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
+                       self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height {
+                        should_be_visible = true;
+                        new_app_id = Some(app_id.clone());
+                        new_x = self.hover_state.x;
                     }
                 }
-                if !found_hover && self.hover_state.is_visible {
-                    // Check if we are hovering over the hover menu itself
-                    let menu_width = 200;
-                    let item_h = 30;
-                    let windows_count = self.hover_state.app_id.as_ref().and_then(|id| running_by_app.get(id)).map(|v| v.len()).unwrap_or(0);
-                    let menu_height = windows_count * item_h;
-                    let menu_x = self.hover_state.x.saturating_sub(menu_width / 2).min(self.width as usize - menu_width);
-                    let menu_y = (self.height as usize - dock_height).saturating_sub(menu_height + 10);
-
-                    // STRICTER detection: Only close if mouse is REALLY outside
-                    let is_inside_menu = self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
-                                         self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height;
-
-                    if !is_inside_menu {
-                        let now = std::time::Instant::now();
-                        if let Some(leave_time) = self.hover_state.last_leave_time {
-                            if now.duration_since(leave_time) < std::time::Duration::from_millis(500) {
-                                return; // Grace period
-                            }
-                        } else {
-                            self.hover_state.last_leave_time = Some(now);
-                            return; // Start grace period
-                        }
-                        
-                        self.hover_state.is_visible = false;
-                        self.hover_state.app_id = None;
-                        self.hover_state.last_leave_time = None;
-                        self.draw(qh);
-                    } else {
-                        self.hover_state.last_leave_time = None; // Reset if inside
-                    }
-                }
-                self.draw(qh);
             }
+        }
 
-            if let PointerEventKind::Press { button, .. } = event.kind {
-                if button == 272 { // BTN_LEFT
-                    // 1. Check if we clicked on the context menu
-                    if self.menu_state.is_open {
-                        let menu_width = 120;
-                        let menu_height = 90;
-                        let menu_x = self.menu_state.x.min(self.width as usize - menu_width);
-                        let menu_y = self.menu_state.y.saturating_sub(menu_height);
+        // Apply state changes atomically
+        if should_be_visible != self.hover_state.is_visible || new_app_id != self.hover_state.app_id {
+            self.hover_state.is_visible = should_be_visible;
+            self.hover_state.app_id = new_app_id;
+            self.hover_state.x = new_x;
+            layer_changed = true;
+        }
+
+        // --- STEP 4: Instantly Handle Clicks (Using Synchronized Bounds) ---
+        for event in events {
+            if let PointerEventKind::Press { button, .. } = event.kind { 
+                if button == 272 { // Left Click
+                    
+                    // A. Click inside Context Menu
+                    if self.menu_state.is_open { 
+                        let menu_width = MENU_WIDTH as usize; 
+                        let menu_height = MENU_HEIGHT as usize; 
+                        let menu_x = self.menu_state.x.min((self.width as usize).saturating_sub(menu_width)); 
+                        let menu_y = self.menu_state.y.saturating_sub(menu_height); 
 
                         if self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
-                           self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height {
+                           self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height { 
 
-                            let clicked_item = (self.pointer_y - menu_y) / 30; 
-                            println!("[MENU] Clicked item index: {}", clicked_item);
-
-                            if let Some(app_id) = self.menu_state.target_app_id.clone() {
+                            let item_h = MENU_ITEM_HEIGHT as usize; 
+                            let clicked_item = (self.pointer_y - menu_y) / item_h; 
+                            let app_id = self.menu_state.target_app_id.clone(); 
+                            
+                            if let Some(app_id) = app_id { 
                                 match clicked_item {
                                     0 => { // Focus
-                                        println!("[MENU] Action: Focus {}", app_id);
-                                        if let Some(handle_id) = &self.menu_state.target_window {
-                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) {
-                                                if let Some(seat) = &self.wl_seat { window_info.handle.activate(seat); }
-                                            }
-                                        }
-                                    },
-                                    1 => { // Minimize (only if focused)
-                                        println!("[MENU] Action: Minimize {}", app_id);
-                                        if let Some(handle_id) = &self.menu_state.target_window {
+                                        if let Some(handle_id) = &self.menu_state.target_window { 
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
-                                                if window_info.is_activated {
-                                                    window_info.handle.set_minimized();
-                                                }
+                                                if let Some(seat) = &self.wl_seat { window_info.handle.activate(seat); } 
                                             }
                                         }
                                     },
-                                    2 => { // Close
-                                        println!("[MENU] Action: Close {}", app_id);
-                                        if let Some(handle_id) = &self.menu_state.target_window {
-                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.close(); }
-                                        }
+                                    1 => { // Open New
+                                        let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() } 
+                                                            else { "/usr/share/dockman/launcher.sh".to_string() }; 
+                                        let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
                                     },
-                                    3 => { // Pin/Unpin
-                                        println!("[MENU] Action: Pin/Unpin {}", app_id);
-                                        let mut pinned = crate::modules::persistence::load_pinned_apps();
-                                        if pinned.contains(&app_id) {
-                                            pinned.remove(&app_id);
-                                        } else {
-                                            pinned.insert(app_id.clone());
-                                            if let Some(handle_id) = &self.menu_state.target_window {
-                                                if let Some(win) = self.open_windows.get(handle_id) {
-                                                    if let Some(ref rgba) = win.icon_rgba { self.icon_cache.insert(app_id.clone(), (rgba.clone(), win.icon_size)); }
-                                                }
+                                    2 => { // Minimize
+                                        if let Some(handle_id) = &self.menu_state.target_window { 
+                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
+                                                window_info.handle.set_minimized(); 
                                             }
                                         }
-                                        crate::modules::persistence::save_pinned_apps(&pinned);
-                                        self.pinned_apps = pinned.into_iter().collect();
                                     },
-                                    4 => { // Open new
-                                        println!("[MENU] Action: Open new {}", app_id);
-                                        let launcher_path = std::path::Path::new("/usr/share/dockman/launcher.sh");
-                                        let path_str = if launcher_path.exists() {
-                                            "/usr/share/dockman/launcher.sh".to_string()
-                                        } else {
-                                            "./launcher.sh".to_string()
-                                        };
-                                        println!("[LAUNCHER] Spawning {} via {}", app_id, path_str);
-                                        std::process::Command::new("sh")
-                                            .arg(path_str)
-                                            .arg(&app_id)
-                                            .spawn()
-                                            .expect("Failed to spawn launcher script");
+                                    3 => { // Close
+                                        if let Some(handle_id) = &self.menu_state.target_window { 
+                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
+                                                window_info.handle.close(); 
+                                            }
+                                        }
+                                    },
+                                    4 => { // Pin/Unpin
+                                        let mut pinned = crate::modules::persistence::load_pinned_apps(); 
+                                        if pinned.contains(&app_id) { pinned.remove(&app_id); } 
+                                        else { pinned.insert(app_id.clone()); } 
+                                        crate::modules::persistence::save_pinned_apps(&pinned); 
+                                        self.pinned_apps = pinned.into_iter().collect(); 
                                     },
                                     _ => {}
                                 }
                             }
-                            self.menu_state.is_open = false;
-                            self.draw(qh);
+                            self.menu_state.is_open = false; 
+                            self.draw(qh); 
                             return;
-                        } else {
-                            self.menu_state.is_open = false;
-                            self.draw(qh);
                         }
                     }
 
-                    // 2. Check if we clicked on the hover menu
-                    if self.hover_state.is_visible {
-                        let menu_width = 200;
-                        let item_h = 30;
-                        if let Some(ref app_id) = self.hover_state.app_id {
-                            if let Some(windows) = running_by_app.get(app_id) {
-                                let menu_height = windows.len() * item_h;
-                                let menu_x = self.hover_state.x.saturating_sub(menu_width / 2).min(self.width as usize - menu_width);
-                                let menu_y = (self.height as usize - dock_height).saturating_sub(menu_height + 10);
+                    // B. Click inside Hover Preview Menu
+                    if self.hover_state.is_visible { 
+                        let menu_width = 200; 
+                        let item_h = 30; 
+                        if let Some(ref app_id) = self.hover_state.app_id { 
+                            if let Some(windows) = running_by_app.get(app_id) { 
+                                let menu_height = windows.len() * item_h; 
+                                let menu_x = self.hover_state.x.saturating_sub(menu_width / 2).min((self.width as usize).saturating_sub(menu_width)); 
+                                let menu_y = dock_top_bound.saturating_sub(menu_height + 10); 
 
                                 if self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
-                                   self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height {
-                                    let idx = (self.pointer_y - menu_y) / item_h;
-                                    if let Some(handle_id) = windows.get(idx) {
-                                        if let Some(win) = self.open_windows.get_mut(handle_id) {
-                                            if let Some(seat) = &self.wl_seat { win.handle.activate(seat); }
+                                   self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height { 
+                                    let idx = (self.pointer_y - menu_y) / item_h; 
+                                    if let Some(handle_id) = windows.get(idx) { 
+                                        if let Some(win) = self.open_windows.get_mut(handle_id) { 
+                                            if let Some(seat) = &self.wl_seat { win.handle.activate(seat); } 
                                         }
                                     }
-                                    self.hover_state.is_visible = false;
-                                    self.draw(qh);
+                                    self.hover_state.is_visible = false; 
+                                    self.draw(qh); 
                                     return;
                                 }
                             }
                         }
                     }
 
-                    // 3. Check icons
-                    for (index, app_id) in apps_in_dock.iter().enumerate() {
-                        let start_x = start_offset_x + spacing + index * (box_size + spacing);
-                        let end_x = start_x + box_size;
-                        if self.pointer_x >= start_x && self.pointer_x <= end_x {
-                            if let Some(windows) = running_by_app.get(app_id) {
-                                // Toggle focus/minimize for the LAST active or first window
-                                if let Some(handle_id) = windows.first() {
-                                    let was_active = self.open_windows.get(handle_id).map(|w| w.is_activated).unwrap_or(false);
-                                    if let Some(win) = self.open_windows.get_mut(handle_id) {
-                                        if was_active { win.handle.set_minimized(); }
-                                        else { if let Some(seat) = &self.wl_seat { win.handle.activate(seat); } }
+                    // C. Click on Dock Icons
+                    if is_over_icons {
+                        for (index, app_id) in apps_in_dock.iter().enumerate() {
+                            let start_x = start_offset_x + spacing + index * (box_size + spacing); 
+                            let end_x = start_x + box_size; 
+                            if self.pointer_x >= start_x && self.pointer_x <= end_x { 
+                                if let Some(windows) = running_by_app.get(app_id) { 
+                                    if let Some(handle_id) = windows.first() { 
+                                        let was_active = self.open_windows.get(handle_id).map(|w| w.is_activated).unwrap_or(false); 
+                                        if let Some(win) = self.open_windows.get_mut(handle_id) { 
+                                            if was_active { win.handle.set_minimized(); } 
+                                            else { if let Some(seat) = &self.wl_seat { win.handle.activate(seat); } } 
+                                        }
                                     }
+                                } else {
+                                    let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() } 
+                                                        else { "/usr/share/dockman/launcher.sh".to_string() }; 
+                                    let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
                                 }
-                            } else {
-                                // Launch
-                                let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() }
-                                                    else { "/usr/share/dockman/launcher.sh".to_string() };
-                                let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn();
+                                break;
                             }
-                            self.connection.flush().expect("Flush failed");
-                            break;
                         }
                     }
-                } else if button == 273 { // BTN_RIGHT
-                    for (index, app_id) in apps_in_dock.iter().enumerate() {
-                        let start_x = start_offset_x + spacing + index * (box_size + spacing);
-                        let end_x = start_x + box_size;
-                        if self.pointer_x >= start_x && self.pointer_x <= end_x {
-                            self.menu_state.is_open = true;
-                            self.menu_state.x = self.pointer_x;
-                            self.menu_state.y = self.pointer_y;
-                            self.menu_state.target_app_id = Some(app_id.clone());
-                            self.menu_state.target_window = running_by_app.get(app_id).and_then(|v| v.first().cloned());
-                            self.draw(qh);
-                            break;
+                } else if button == 273 { // Right Click
+                    if is_over_icons {
+                        for (index, app_id) in apps_in_dock.iter().enumerate() {
+                            let start_x = start_offset_x + spacing + index * (box_size + spacing); 
+                            let end_x = start_x + box_size; 
+                            if self.pointer_x >= start_x && self.pointer_x <= end_x { 
+                                self.menu_state.is_open = true; 
+                                self.menu_state.x = self.pointer_x; 
+                                self.menu_state.y = self.pointer_y; 
+                                self.menu_state.target_app_id = Some(app_id.clone()); 
+                                let windows = running_by_app.get(app_id).map(|v| v.clone()).unwrap_or_default(); 
+                                self.menu_state.target_window = windows.iter()
+                                    .find(|id| self.open_windows.get(id).map(|w| w.is_activated).unwrap_or(false)) 
+                                    .cloned() 
+                                    .or_else(|| windows.first().cloned()); 
+                                layer_changed = true;
+                                break;
+                            }
                         }
                     }
                 }
             }
         }
-        
-        // Auto-dismiss check (1 second)
-        if (self.menu_state.is_open || self.hover_state.is_visible) {
-             let now = std::time::Instant::now();
-             // Dismiss if no interaction for 1s
-             if self.last_interact_time.elapsed() > std::time::Duration::from_secs(1) {
-                self.menu_state.is_open = false;
-                self.hover_state.is_visible = false;
-                self.draw(qh);
-             }
-        }
-    }
+
+        // --- STEP 5: Force Downstream Sync ---
+		if layer_changed {
+		    self.needs_redraw = true; 
+		}
+
+		if self.needs_redraw {
+		    self.draw(qh);
+		    self.needs_redraw = false; 
+		    let _ = self.connection.flush();
+		}
+	}
 }
 
 // =========================================================================
