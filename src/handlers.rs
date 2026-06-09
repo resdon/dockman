@@ -206,10 +206,27 @@ impl PointerHandler for AppState {
                     let menu_x = self.hover_state.x.saturating_sub(menu_width / 2).min(self.width as usize - menu_width);
                     let menu_y = (self.height as usize - dock_height).saturating_sub(menu_height + 10);
 
-                    if !(self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
-                         self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height) {
+                    // STRICTER detection: Only close if mouse is REALLY outside
+                    let is_inside_menu = self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
+                                         self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height;
+
+                    if !is_inside_menu {
+                        let now = std::time::Instant::now();
+                        if let Some(leave_time) = self.hover_state.last_leave_time {
+                            if now.duration_since(leave_time) < std::time::Duration::from_millis(500) {
+                                return; // Grace period
+                            }
+                        } else {
+                            self.hover_state.last_leave_time = Some(now);
+                            return; // Start grace period
+                        }
+                        
                         self.hover_state.is_visible = false;
                         self.hover_state.app_id = None;
+                        self.hover_state.last_leave_time = None;
+                        self.draw(qh);
+                    } else {
+                        self.hover_state.last_leave_time = None; // Reset if inside
                     }
                 }
                 self.draw(qh);

@@ -52,6 +52,7 @@ pub struct HoverState {
     pub x: usize,
     pub app_id: Option<String>,
     pub is_visible: bool,
+    pub last_leave_time: Option<std::time::Instant>,
 }
 
 pub struct AppState {
@@ -217,6 +218,7 @@ fn main() {
             x: 0,
             app_id: None,
             is_visible: false,
+            last_leave_time: None,
         },
 		needs_redraw: false,
     };

@@ -194,7 +194,7 @@ pub fn render_windows(
                 let menu_width = 200;
                 let item_h = 30;
                 let menu_height = windows.len() * item_h;
-                let menu_x = hover_state.x.saturating_sub(menu_width / 2).min(width as usize - menu_width);
+                let menu_x = hover_state.x.saturating_sub(menu_width / 2).min((width as usize).saturating_sub(menu_width));
                 let menu_y = (height as usize - dock_height).saturating_sub(menu_height + 10);
 
                 for y in 0..menu_height {
@@ -209,8 +209,13 @@ pub fn render_windows(
                 }
 
                 for (i, w) in windows.iter().enumerate() {
-                    let title = if w.title.len() > 20 { format!("{}...", &w.title[..17]) } else { w.title.clone() };
+                    let title = if w.title.chars().count() > 20 { 
+                        format!("{}...", w.title.chars().take(17).collect::<String>()) 
+                    } else { 
+                        w.title.clone() 
+                    };
                     draw_text(canvas, width, height, &font_manager.font, &title, 14.0, menu_x + 5, menu_y + i * item_h + 5, (255, 255, 255));
+
                     if i > 0 {
                         let line_y = menu_y + i * item_h;
                         for x in 0..menu_width {
