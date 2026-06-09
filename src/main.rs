@@ -21,7 +21,7 @@ use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_h
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_manager_v1::ZwlrForeignToplevelManagerV1;
 use wayland_client::backend::ObjectId;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 // 1. Mount the files as local root modules
 pub mod handlers;
@@ -62,7 +62,8 @@ pub struct AppState {
     pub pointer_x: usize,
     pub pointer_y: usize,
     pub open_windows: HashMap<ObjectId, WindowDiagnostics>,
-    pub pinned_apps: Vec<String>,
+    pub pinned_apps: HashSet<String>,
+    pub icon_cache: HashMap<String, (Vec<u8>, u32)>,
     pub menu_state: MenuState,
     pub needs_redraw: bool,
 }
@@ -76,19 +77,25 @@ impl AppState {
         let box_size = 48;
         let spacing = 12;
         
-        // Count total unique items (pinned or open)
-        let mut total_apps = self.pinned_apps.len();
-        for (id, _) in &self.open_windows {
-            // This is a simplification; ideally we'd match app_ids
-            total_apps += 1;
+        // Identify all unique apps that should be in the dock
+        let mut running_app_ids = HashSet::new();
+        for window in self.open_windows.values() {
+            running_app_ids.insert(window.app_id.clone());
         }
-        // For now, let's stick to open windows to keep it simple, 
-        // we can integrate pinning later if needed.
-        let total_windows = self.open_windows.len();
+
+        // Count items: all open windows + pinned apps that are NOT running
+        let mut pinned_not_running_count = 0;
+        for pinned_id in &self.pinned_apps {
+            if !running_app_ids.contains(pinned_id) {
+                pinned_not_running_count += 1;
+            }
+        }
+        
+        let total_items = self.open_windows.len() + pinned_not_running_count;
         
         // Calculate required width based on icons, but maintain a minimum width
-        let content_width = if total_windows > 0 {
-            (total_windows * box_size + (total_windows + 1) * spacing) as u32
+        let content_width = if total_items > 0 {
+            (total_items * box_size + (total_items + 1) * spacing) as u32
         } else {
             100 // Minimal width for empty dock
         };
@@ -120,7 +127,7 @@ impl AppState {
             .expect("Failed to create layout backing memory buffer");
 
         // Execute your local render loop code!
-        render::render_windows(canvas, width, height, &self.open_windows, &self.menu_state);
+        render::render_windows(canvas, width, height, &self.open_windows, &self.pinned_apps, &self.icon_cache, &self.menu_state);
 
         if let Some(ref surface) = self.layer_surface {
             buffer.attach_to(surface.wl_surface()).expect("Failed to blit surface memory buffer");
@@ -174,7 +181,8 @@ fn main() {
         pointer_x: 0,
         pointer_y: 0,
         open_windows: HashMap::new(),
-        pinned_apps: Vec::new(),
+        pinned_apps: HashSet::new(),
+        icon_cache: HashMap::new(),
         menu_state: MenuState {
             x: 0,
             y: 0,

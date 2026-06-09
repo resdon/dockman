@@ -1,3 +1,4 @@
+use std::collections::{HashMap, HashSet};
 pub use crate::lib::models::LastState;
 use crate::lib::models::WindowDiagnostics;
 use crate::lib::icon_utils;
@@ -192,8 +193,19 @@ impl PointerHandler for AppState {
                                         1 => { // Close
                                             window_info.handle.close();
                                         },
-                                        2 => { // Pin/Unpin (placeholder)
-                                            println!("[MENU] Pin/Unpin toggled for {}", window_info.app_id);
+                                        2 => { // Pin/Unpin
+                                            let app_id = window_info.app_id.clone();
+                                            if self.pinned_apps.contains(&app_id) {
+                                                println!("[MENU] Unpinning {}", app_id);
+                                                self.pinned_apps.remove(&app_id);
+                                            } else {
+                                                println!("[MENU] Pinning {}", app_id);
+                                                self.pinned_apps.insert(app_id.clone());
+                                                // Cache icon if we have it
+                                                if let Some(ref rgba) = window_info.icon_rgba {
+                                                    self.icon_cache.insert(app_id, (rgba.clone(), window_info.icon_size));
+                                                }
+                                            }
                                         },
                                         _ => {}
                                     }
@@ -211,12 +223,20 @@ impl PointerHandler for AppState {
                     }
 
                     let mut clicked_handle: Option<ObjectId> = None;
+                    let mut running_app_ids = HashSet::new();
                     let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
                     sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
-                    
-                    let total_windows = sorted_windows.len();
-                    let content_width = if total_windows > 0 {
-                        total_windows * box_size + (total_windows + 1) * spacing
+                    for (_, w) in &sorted_windows { running_app_ids.insert(w.app_id.clone()); }
+
+                    let mut pinned_not_running: Vec<String> = self.pinned_apps.iter()
+                        .filter(|id| !running_app_ids.contains(*id))
+                        .cloned()
+                        .collect();
+                    pinned_not_running.sort();
+
+                    let total_items = sorted_windows.len() + pinned_not_running.len();
+                    let content_width = if total_items > 0 {
+                        total_items * box_size + (total_items + 1) * spacing
                     } else {
                         0
                     };
@@ -227,12 +247,22 @@ impl PointerHandler for AppState {
                         0
                     };
 
-                    for (index, (handle, _)) in sorted_windows.iter().enumerate() {
+                    // Combined list for hit detection (must match render.rs order)
+                    let mut items = Vec::new();
+                    for id in pinned_not_running { items.push((id, None)); }
+                    for (handle, w) in sorted_windows { items.push((w.app_id.clone(), Some(handle.clone()))); }
+
+                    for (index, (app_id, handle)) in items.iter().enumerate() {
                         let start_x = start_offset_x + spacing + index * (box_size + spacing);
                         let end_x = start_x + box_size;
                         if self.pointer_x >= start_x && self.pointer_x <= end_x {
-                            // Dereference the shared reference to clone the ObjectId
-                            clicked_handle = Some((*handle).clone());
+                            if let Some(h) = handle {
+                                clicked_handle = Some(h.clone());
+                            } else {
+                                // Launch pinned app
+                                println!("[LAUNCHER] Spawning {}", app_id);
+                                let _ = std::process::Command::new(app_id).spawn();
+                            }
                             break;
                         }
                     }
@@ -264,13 +294,20 @@ impl PointerHandler for AppState {
                         }
                     }
                 } else if button == 273 { // BTN_RIGHT
-                    let mut clicked_handle: Option<ObjectId> = None;
+                    let mut running_app_ids = HashSet::new();
                     let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
                     sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
-                    
-                    let total_windows = sorted_windows.len();
-                    let content_width = if total_windows > 0 {
-                        total_windows * box_size + (total_windows + 1) * spacing
+                    for (_, w) in &sorted_windows { running_app_ids.insert(w.app_id.clone()); }
+
+                    let mut pinned_not_running: Vec<String> = self.pinned_apps.iter()
+                        .filter(|id| !running_app_ids.contains(*id))
+                        .cloned()
+                        .collect();
+                    pinned_not_running.sort();
+
+                    let total_items = sorted_windows.len() + pinned_not_running.len();
+                    let content_width = if total_items > 0 {
+                        total_items * box_size + (total_items + 1) * spacing
                     } else {
                         0
                     };
@@ -281,21 +318,24 @@ impl PointerHandler for AppState {
                         0
                     };
 
-                    for (index, (handle, _)) in sorted_windows.iter().enumerate() {
+                    let mut items = Vec::new();
+                    for id in pinned_not_running { items.push((id, None)); }
+                    for (handle, w) in sorted_windows { items.push((w.app_id.clone(), Some(handle.clone()))); }
+
+                    for (index, (app_id, handle)) in items.iter().enumerate() {
                         let start_x = start_offset_x + spacing + index * (box_size + spacing);
                         let end_x = start_x + box_size;
                         if self.pointer_x >= start_x && self.pointer_x <= end_x {
-                            clicked_handle = Some((*handle).clone());
+                            self.menu_state.is_open = true;
+                            self.menu_state.x = self.pointer_x;
+                            self.menu_state.y = self.pointer_y;
+                            self.menu_state.target_window = handle.clone();
+                            // If it's a pinned app NOT running, we still need to show the menu.
+                            // We might need to adjust MenuState to store app_id too.
+                            // For now, let's just use target_window as None for pinned apps.
+                            self.draw(qh);
                             break;
                         }
-                    }
-
-                    if let Some(handle_id) = clicked_handle {
-                        self.menu_state.is_open = true;
-                        self.menu_state.x = self.pointer_x;
-                        self.menu_state.y = self.pointer_y;
-                        self.menu_state.target_window = Some(handle_id);
-                        self.draw(qh);
                     }
                 }
             }
@@ -377,7 +417,9 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
                         let target_size = 48;
                         if let Some(path) = icon_path {
                             if let Some((_, _, rgba_data)) = crate::lib::terminal_graphics::load_image_raw_rgba(&path, target_size) {
-                                raw_pixels = Some(rgba_data);
+                                raw_pixels = Some(rgba_data.clone());
+                                // Also populate icon_cache for pinning
+                                state.icon_cache.insert(cleaned_app_id.to_string(), (rgba_data, target_size));
                             }
                         }
                         window.icon_name = icon_name;
