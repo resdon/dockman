@@ -244,36 +244,49 @@ impl PointerHandler for AppState {
 
                         if self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
                            self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height {
-                            
-                            let item_height = menu_height / 3;
-                            let clicked_item = (self.pointer_y - menu_y) / item_height;
+
+                            let clicked_item = (self.pointer_y - menu_y) / 30; 
+                            println!("[MENU] Clicked item index: {}", clicked_item);
 
                             if let Some(app_id) = self.menu_state.target_app_id.clone() {
                                 match clicked_item {
-                                    0 => { // Open/Focus
+                                    0 => { // Focus
+                                        println!("[MENU] Action: Focus {}", app_id);
                                         if let Some(handle_id) = &self.menu_state.target_window {
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) {
-                                                if let Some(seat) = &self.wl_seat {
-                                                    window_info.handle.activate(seat);
-                                                }
+                                                if let Some(seat) = &self.wl_seat { window_info.handle.activate(seat); }
                                             }
-                                        } else {
-                                            // Launch pinned app
-                                            let launcher_path = if std::path::Path::new("./launcher.sh").exists() {
-                                                "./launcher.sh".to_string()
-                                            } else {
-                                                "/usr/share/dockman/launcher.sh".to_string()
-                                            };
-                                            println!("[LAUNCHER] Spawning {} via {}", app_id, launcher_path);
-                                            let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn();
                                         }
                                     },
-                                    1 => { // Close
+                                    1 => { // Minimize
+                                        println!("[MENU] Action: Minimize {}", app_id);
+                                        if let Some(handle_id) = &self.menu_state.target_window {
+                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.set_minimized(); }
+                                        }
+                                    },
+                                    2 => { // Open new
+                                        println!("[MENU] Action: Open new {}", app_id);
+                                        let launcher_path = std::path::Path::new("/usr/share/dockman/launcher.sh");
+                                        let path_str = if launcher_path.exists() {
+                                            "/usr/share/dockman/launcher.sh".to_string()
+                                        } else {
+                                            "./launcher.sh".to_string()
+                                        };
+                                        println!("[LAUNCHER] Spawning {} via {}", app_id, path_str);
+                                        std::process::Command::new("sh")
+                                            .arg(path_str)
+                                            .arg(&app_id)
+                                            .spawn()
+                                            .expect("Failed to spawn launcher script");
+                                    },
+                                    3 => { // Close
+                                        println!("[MENU] Action: Close {}", app_id);
                                         if let Some(handle_id) = &self.menu_state.target_window {
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.close(); }
                                         }
                                     },
                                     4 => { // Pin/Unpin
+                                        println!("[MENU] Action: Pin/Unpin {}", app_id);
                                         let mut pinned = crate::modules::persistence::load_pinned_apps();
                                         if pinned.contains(&app_id) {
                                             pinned.remove(&app_id);
@@ -369,11 +382,14 @@ impl PointerHandler for AppState {
         }
         
         // Auto-dismiss check (1 second)
-        if (self.menu_state.is_open || self.hover_state.is_visible) && 
-           self.last_interact_time.elapsed() > std::time::Duration::from_secs(1) {
-            self.menu_state.is_open = false;
-            self.hover_state.is_visible = false;
-            self.draw(qh);
+        if (self.menu_state.is_open || self.hover_state.is_visible) {
+             let now = std::time::Instant::now();
+             // Dismiss if no interaction for 1s
+             if self.last_interact_time.elapsed() > std::time::Duration::from_secs(1) {
+                self.menu_state.is_open = false;
+                self.hover_state.is_visible = false;
+                self.draw(qh);
+             }
         }
     }
 }

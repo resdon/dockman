@@ -2,21 +2,37 @@ use std::fs;
 use std::collections::HashSet;
 use std::path::Path;
 
-const CONFIG_FILE: &str = "/home/resdon/.config/dockman/pins.json";
+fn get_config_dir() -> String {
+    let home = std::env::var("HOME").unwrap_or_else(|_| "/tmp".to_string());
+    format!("{}/.config/dockman", home)
+}
+
+fn get_config_path() -> String {
+    format!("{}/pins.json", get_config_dir())
+}
 
 pub fn load_pinned_apps() -> HashSet<String> {
-    if let Ok(data) = fs::read_to_string(CONFIG_FILE) {
-        serde_json::from_str(&data).unwrap_or_default()
+    let path = get_config_path();
+    println!("[PERSISTENCE] Loading pins from: {}", path);
+    if let Ok(data) = fs::read_to_string(&path) {
+        let pins: HashSet<String> = serde_json::from_str(&data).unwrap_or_else(|_| HashSet::new());
+        println!("[PERSISTENCE] Loaded: {:?}", pins);
+        pins
     } else {
+        println!("[PERSISTENCE] No config file found, starting empty.");
         HashSet::new()
     }
 }
 
 pub fn save_pinned_apps(pinned: &HashSet<String>) {
-    if let Some(parent) = Path::new(CONFIG_FILE).parent() {
-        let _ = fs::create_dir_all(parent);
-    }
+    let dir = get_config_dir();
+    let path = get_config_path();
+    println!("[PERSISTENCE] Saving pins to: {} Data: {:?}", path, pinned);
+    let _ = fs::create_dir_all(dir);
     if let Ok(data) = serde_json::to_string(pinned) {
-        let _ = fs::write(CONFIG_FILE, data);
+        let _ = fs::write(path, data);
+        println!("[PERSISTENCE] Save successful.");
+    } else {
+        println!("[PERSISTENCE] Save failed.");
     }
 }
