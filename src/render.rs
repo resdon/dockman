@@ -169,10 +169,9 @@ pub fn render_windows(
         // Draw 5 items
         let item_h = menu_height / 5;
         let is_pinned = menu_state.target_app_id.as_ref().map(|id| pinned_apps.contains(id)).unwrap_or(false);
-        let actions = ["Focus", "Minimize", "Open new", "Close", if is_pinned { "Unpin" } else { "Pin" }];
+        let actions = ["Focus", "Minimize", "Close", if is_pinned { "Unpin" } else { "Pin" }, "Open new"];
 
         for (i, label) in actions.iter().enumerate() {
-
             draw_text(canvas, width, height, &font_manager.font, label, 14.0, menu_x + 10, menu_y + 5 + i * item_h, (255, 255, 255));
             if i > 0 {
                 let line_y = menu_y + i * item_h;

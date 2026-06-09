@@ -258,34 +258,23 @@ impl PointerHandler for AppState {
                                             }
                                         }
                                     },
-                                    1 => { // Minimize
+                                    1 => { // Minimize (only if focused)
                                         println!("[MENU] Action: Minimize {}", app_id);
                                         if let Some(handle_id) = &self.menu_state.target_window {
-                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.set_minimized(); }
+                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
+                                                if window_info.is_activated {
+                                                    window_info.handle.set_minimized();
+                                                }
+                                            }
                                         }
                                     },
-                                    2 => { // Open new
-                                        println!("[MENU] Action: Open new {}", app_id);
-                                        let launcher_path = std::path::Path::new("/usr/share/dockman/launcher.sh");
-                                        let path_str = if launcher_path.exists() {
-                                            "/usr/share/dockman/launcher.sh".to_string()
-                                        } else {
-                                            "./launcher.sh".to_string()
-                                        };
-                                        println!("[LAUNCHER] Spawning {} via {}", app_id, path_str);
-                                        std::process::Command::new("sh")
-                                            .arg(path_str)
-                                            .arg(&app_id)
-                                            .spawn()
-                                            .expect("Failed to spawn launcher script");
-                                    },
-                                    3 => { // Close
+                                    2 => { // Close
                                         println!("[MENU] Action: Close {}", app_id);
                                         if let Some(handle_id) = &self.menu_state.target_window {
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.close(); }
                                         }
                                     },
-                                    4 => { // Pin/Unpin
+                                    3 => { // Pin/Unpin
                                         println!("[MENU] Action: Pin/Unpin {}", app_id);
                                         let mut pinned = crate::modules::persistence::load_pinned_apps();
                                         if pinned.contains(&app_id) {
@@ -300,6 +289,21 @@ impl PointerHandler for AppState {
                                         }
                                         crate::modules::persistence::save_pinned_apps(&pinned);
                                         self.pinned_apps = pinned.into_iter().collect();
+                                    },
+                                    4 => { // Open new
+                                        println!("[MENU] Action: Open new {}", app_id);
+                                        let launcher_path = std::path::Path::new("/usr/share/dockman/launcher.sh");
+                                        let path_str = if launcher_path.exists() {
+                                            "/usr/share/dockman/launcher.sh".to_string()
+                                        } else {
+                                            "./launcher.sh".to_string()
+                                        };
+                                        println!("[LAUNCHER] Spawning {} via {}", app_id, path_str);
+                                        std::process::Command::new("sh")
+                                            .arg(path_str)
+                                            .arg(&app_id)
+                                            .spawn()
+                                            .expect("Failed to spawn launcher script");
                                     },
                                     _ => {}
                                 }
