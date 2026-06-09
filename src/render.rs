@@ -151,8 +151,8 @@ pub fn render_windows(
 
     // 4. Render Context Menu
     if menu_state.is_open {
-        let menu_width = 120;
-        let menu_height = 90;
+        let menu_width = 150;
+        let menu_height = 150;
         let menu_x = menu_state.x.min(width as usize - menu_width);
         let menu_y = menu_state.y.saturating_sub(menu_height);
 
@@ -167,21 +167,19 @@ pub fn render_windows(
             }
         }
         
-        let item_h = menu_height / 3;
-        draw_text(canvas, width, height, &font_manager.font, "Open", 16.0, menu_x + 10, menu_y + 5, (255, 255, 255));
-        draw_text(canvas, width, height, &font_manager.font, "Close", 16.0, menu_x + 10, menu_y + 5 + item_h, (255, 255, 255));
+        let item_h = menu_height / 5;
+        let actions = ["Focus", "Minimize", "Open new", "Close", if menu_state.target_app_id.as_ref().map(|id| pinned_apps.contains(id)).unwrap_or(false) { "Unpin" } else { "Pin" }];
         
-        let is_pinned = menu_state.target_app_id.as_ref().map(|id| pinned_apps.contains(id)).unwrap_or(false);
-        let pin_label = if is_pinned { "Unpin" } else { "Pin" };
-        draw_text(canvas, width, height, &font_manager.font, pin_label, 16.0, menu_x + 10, menu_y + 5 + item_h * 2, (255, 255, 255));
-
-        for i in 1..3 {
-            let line_y = menu_y + i * item_h;
-            for x in 0..menu_width {
-                let canvas_x = menu_x + x;
-                if canvas_x < width as usize && line_y < height as usize {
-                    let canvas_idx = (line_y * (width as usize) + canvas_x) * 4;
-                    canvas[canvas_idx] = 0x44; canvas[canvas_idx + 1] = 0x44; canvas[canvas_idx + 2] = 0x44;
+        for (i, label) in actions.iter().enumerate() {
+            draw_text(canvas, width, height, &font_manager.font, label, 14.0, menu_x + 10, menu_y + 5 + i * item_h, (255, 255, 255));
+            if i > 0 {
+                let line_y = menu_y + i * item_h;
+                for x in 0..menu_width {
+                    let canvas_x = menu_x + x;
+                    if canvas_x < width as usize && line_y < height as usize {
+                        let canvas_idx = (line_y * (width as usize) + canvas_x) * 4;
+                        canvas[canvas_idx] = 0x44; canvas[canvas_idx + 1] = 0x44; canvas[canvas_idx + 2] = 0x44;
+                    }
                 }
             }
         }

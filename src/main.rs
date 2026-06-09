@@ -26,8 +26,12 @@ use std::collections::{HashMap, HashSet};
 // 1. Mount the files as local root modules
 pub mod handlers;
 pub mod render;
+pub mod modules {
+    pub mod persistence;
+}
 
 use handlers::*;
+use modules::persistence;
 
 // 2. Mock FontManager structure to fix E0425 and E0433
 pub struct FontManager {
@@ -79,6 +83,7 @@ pub struct AppState {
     pub icon_cache: HashMap<String, (Vec<u8>, u32)>,
     pub menu_state: MenuState,
     pub hover_state: HoverState,
+    pub last_interact_time: std::time::Instant,
     pub needs_redraw: bool,
 }
 
@@ -205,7 +210,7 @@ fn main() {
         pointer_x: 0,
         pointer_y: 0,
         open_windows: HashMap::new(),
-        pinned_apps: Vec::new(),
+        pinned_apps: persistence::load_pinned_apps().into_iter().collect(),
         icon_cache: HashMap::new(),
         menu_state: MenuState {
             x: 0,
@@ -220,6 +225,7 @@ fn main() {
             is_visible: false,
             last_leave_time: None,
         },
+        last_interact_time: std::time::Instant::now(),
 		needs_redraw: false,
     };
 

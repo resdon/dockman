@@ -161,6 +161,7 @@ impl PointerHandler for AppState {
         events: &[PointerEvent],
     ) {
         for event in events {
+            self.last_interact_time = std::time::Instant::now(); // Update interaction time
             self.pointer_x = event.position.0 as usize;
             self.pointer_y = event.position.1 as usize;
 
@@ -272,17 +273,20 @@ impl PointerHandler for AppState {
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.close(); }
                                         }
                                     },
-                                    2 => { // Pin/Unpin
-                                        if self.pinned_apps.contains(&app_id) {
-                                            self.pinned_apps.retain(|id| id != &app_id);
+                                    4 => { // Pin/Unpin
+                                        let mut pinned = crate::modules::persistence::load_pinned_apps();
+                                        if pinned.contains(&app_id) {
+                                            pinned.remove(&app_id);
                                         } else {
-                                            self.pinned_apps.push(app_id.clone());
+                                            pinned.insert(app_id.clone());
                                             if let Some(handle_id) = &self.menu_state.target_window {
                                                 if let Some(win) = self.open_windows.get(handle_id) {
-                                                    if let Some(ref rgba) = win.icon_rgba { self.icon_cache.insert(app_id, (rgba.clone(), win.icon_size)); }
+                                                    if let Some(ref rgba) = win.icon_rgba { self.icon_cache.insert(app_id.clone(), (rgba.clone(), win.icon_size)); }
                                                 }
                                             }
                                         }
+                                        crate::modules::persistence::save_pinned_apps(&pinned);
+                                        self.pinned_apps = pinned.into_iter().collect();
                                     },
                                     _ => {}
                                 }
@@ -362,6 +366,14 @@ impl PointerHandler for AppState {
                     }
                 }
             }
+        }
+        
+        // Auto-dismiss check (1 second)
+        if (self.menu_state.is_open || self.hover_state.is_visible) && 
+           self.last_interact_time.elapsed() > std::time::Duration::from_secs(1) {
+            self.menu_state.is_open = false;
+            self.hover_state.is_visible = false;
+            self.draw(qh);
         }
     }
 }
