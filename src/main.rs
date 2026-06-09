@@ -54,6 +54,7 @@ pub struct AppState {
     pub wl_pointer: Option<WlPointer>,
     pub pointer_x: usize,
     pub open_windows: HashMap<ObjectId, WindowDiagnostics>,
+    pub needs_redraw: bool,
 }
 
 // =========================================================================
@@ -106,7 +107,9 @@ fn main() {
 
     let seat_state = SeatState::new(&globals, &qh);
     
-    let font_bytes = std::fs::read("font.ttf").unwrap_or_else(|_| vec![0; 100]);
+    let font_bytes = std::fs::read("font.ttf")
+        .or_else(|_| std::fs::read("/usr/share/dockman/font.ttf"))
+        .unwrap_or_else(|_| vec![0; 100]);
 
     let mut state = AppState {
     	connection,
@@ -127,6 +130,7 @@ fn main() {
         wl_pointer: None,
         pointer_x: 0,
         open_windows: HashMap::new(),
+		needs_redraw: false,
     };
 
     // =========================================================================

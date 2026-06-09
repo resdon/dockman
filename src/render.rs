@@ -84,19 +84,25 @@ pub fn render_windows(
             }
         }
 
-        // 3. Render active tracking indicator underline strip if window is currently active/focused
-        if window.is_activated {
-            let indicator_y = start_y + box_size + 4;
-            if indicator_y < height as usize {
-                for x in 0..box_size {
-                    let canvas_x = start_x + x;
-                    if canvas_x < width as usize {
-                        let canvas_idx = (indicator_y * (width as usize) + canvas_x) * 4;
-                        canvas[canvas_idx] = 0xFF;     // Accent focus line (white)
-                        canvas[canvas_idx + 1] = 0xFF;
-                        canvas[canvas_idx + 2] = 0xFF;
-                        canvas[canvas_idx + 3] = 0xFF;
-                    }
+        // 3. Render tracking indicator dashes
+        let indicator_y = start_y + box_size + 4;
+        if indicator_y < height as usize {
+            // "Dashes" for all open windows, a longer "bar" for the active one.
+            let indicator_width = if window.is_activated { 32 } else { 8 };
+            let indicator_offset = (box_size - indicator_width) / 2;
+
+            for x in 0..indicator_width {
+                let canvas_x = start_x + indicator_offset + x;
+                if canvas_x < width as usize {
+                    let canvas_idx = (indicator_y * (width as usize) + canvas_x) * 4;
+                    
+                    // Dimmer dash for inactive windows
+                    let brightness = if window.is_activated { 0xFF } else { 0x66 };
+                    
+                    canvas[canvas_idx] = brightness;     // B
+                    canvas[canvas_idx + 1] = brightness; // G
+                    canvas[canvas_idx + 2] = brightness; // R
+                    canvas[canvas_idx + 3] = 0xFF;       // A
                 }
             }
         }

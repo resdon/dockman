@@ -37,12 +37,16 @@ use crate::AppState;
 fn parse_window_states(state_bytes: &[u8]) -> (bool, bool) {
     let mut activated = false;
     let mut minimized = false;
+    
+    // The state event sends a list of u32s. 
+    // Protocol zwlr_foreign_toplevel_handle_v1::State:
+    // 0 = Maximize, 1 = Minimize, 2 = Activated, 3 = Fullscreen
     for chunk in state_bytes.chunks_exact(4) {
         let value = u32::from_ne_bytes(chunk.try_into().unwrap());
         match value {
-            2 => activated = true, // Corrected from 3
-            1 => minimized = true, // Corrected from 4
-            _ => println!("[DEBUG] Unknown bit: {}", value),
+            2 => activated = true, 
+            1 => minimized = true, 
+            _ => {} // Ignore Maximize (0) and Fullscreen (3) for now
         }
     }
     (activated, minimized)
@@ -178,26 +182,31 @@ impl PointerHandler for AppState {
                     }
                     
                     // Bind the ID safely and perform the action
-					if let Some(handle_id) = clicked_handle {
-						if let Some(window_info) = self.open_windows.get_mut(&handle_id) {
-						    window_info.is_pending = true;
-						    
-						    // Remove the requirement for is_activated to be true to minimize.
-						    // Just check the current minimized state.
-						    if window_info.is_minimized {
-						        println!("[DEBUG] Window is minimized. Activating...");
-						        if let Some(seat) = &self.wl_seat {
-						            window_info.handle.activate(seat);
-						        }
-						    } else {
-						        println!("[DEBUG] Window is not minimized. Minimizing...");
-						        window_info.handle.set_minimized();
-						    }
-						    
-						    self.connection.flush().expect("Flush failed");
-						    self.draw(qh);
-						}
-					}
+                    if let Some(handle_id) = clicked_handle {
+                        // 1. Capture the current state of the clicked window
+                        let was_active = self.open_windows.get(&handle_id)
+                            .map(|w| w.is_activated)
+                            .unwrap_or(false);
+
+                        // 2. Retrieve the one that was clicked and toggle its state
+                        if let Some(window_info) = self.open_windows.get_mut(&handle_id) {
+                            // Mark as pending so we know an action is in flight
+                            window_info.is_pending = true; 
+                            
+                            // Issue the protocol request based on PREVIOUS state
+                            if was_active {
+                                // Already active? Minimize it.
+                                window_info.handle.set_minimized();
+                            } else {
+                                // Not active? Activate it.
+                                if let Some(seat) = &self.wl_seat {
+                                    window_info.handle.activate(seat);
+                                }
+                            }
+                            
+                            self.connection.flush().expect("Flush failed");
+                        }
+                    }
                 }
             }
         }
@@ -288,25 +297,20 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
                 }
                 state.draw(qh);
             }
-				zwlr_foreign_toplevel_handle_v1::Event::State { state: state_bytes } => {
-					println!("[WAYLAND] State event received, length: {}", state_bytes.len());
-					println!("[DEBUG] Raw state bytes: {:?}", state_bytes);
-				    let (activated, minimized) = parse_window_states(&state_bytes);
-				    
-				    if let Some(window) = state.open_windows.get_mut(&handle.id()) {
-				        // If we were waiting for this, just unlock and sync
-				        if window.is_pending {
-				            window.is_pending = false;
-				        } else {
-				            // Only if is_pending is false do we treat this as an 
-				            // external/user-initiated change
-				            window.is_activated = activated;
-				            window.is_minimized = minimized;
-				        }
-				        if activated {println!("[DEBUG] Window {} is now active.", window.app_name);}
-				    }
-				    state.draw(qh);
-				}
+			zwlr_foreign_toplevel_handle_v1::Event::State { state: state_bytes } => {
+			    let (activated, minimized) = parse_window_states(&state_bytes);
+			    
+			    if let Some(window) = state.open_windows.get_mut(&handle.id()) {
+			        // The compositor is telling us the current reality. 
+			        // Sync our local state to this reality.
+			        window.is_activated = activated;
+			        window.is_minimized = minimized;
+			        
+			        // Now that the reality matches our intent, clear pending
+			        window.is_pending = false; 
+			    }
+			    state.draw(qh);
+			}
             _ => {println!("[WAYLAND] Unmatched event received: {:?}", event);}
             
         }
