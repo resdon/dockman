@@ -161,11 +161,54 @@ impl PointerHandler for AppState {
     ) {
         for event in events {
             self.pointer_x = event.position.0 as usize;
+            self.pointer_y = event.position.1 as usize;
 
             if let PointerEventKind::Press { button, .. } = event.kind {
+                let box_size = 48;
+                let spacing = 12;
+
                 if button == 272 { // BTN_LEFT
-                    let box_size = 48;
-                    let spacing = 12;
+                    // 1. Check if we clicked on the context menu
+                    if self.menu_state.is_open {
+                        let menu_width = 120;
+                        let menu_height = 90;
+                        let menu_x = self.menu_state.x.min(self.width as usize - menu_width);
+                        let menu_y = self.menu_state.y.saturating_sub(menu_height);
+
+                        if self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
+                           self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height {
+                            
+                            let item_height = menu_height / 3;
+                            let clicked_item = (self.pointer_y - menu_y) / item_height;
+
+                            if let Some(handle_id) = self.menu_state.target_window.clone() {
+                                if let Some(window_info) = self.open_windows.get_mut(&handle_id) {
+                                    match clicked_item {
+                                        0 => { // Open/Focus
+                                            if let Some(seat) = &self.wl_seat {
+                                                window_info.handle.activate(seat);
+                                            }
+                                        },
+                                        1 => { // Close
+                                            window_info.handle.close();
+                                        },
+                                        2 => { // Pin/Unpin (placeholder)
+                                            println!("[MENU] Pin/Unpin toggled for {}", window_info.app_id);
+                                        },
+                                        _ => {}
+                                    }
+                                }
+                            }
+                            self.menu_state.is_open = false;
+                            self.draw(qh);
+                            return;
+                        } else {
+                            // Clicked outside menu, close it
+                            self.menu_state.is_open = false;
+                            self.draw(qh);
+                            // Continue to check if we clicked an icon
+                        }
+                    }
 
                     let mut clicked_handle: Option<ObjectId> = None;
                     let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
@@ -219,6 +262,40 @@ impl PointerHandler for AppState {
                             
                             self.connection.flush().expect("Flush failed");
                         }
+                    }
+                } else if button == 273 { // BTN_RIGHT
+                    let mut clicked_handle: Option<ObjectId> = None;
+                    let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
+                    sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
+                    
+                    let total_windows = sorted_windows.len();
+                    let content_width = if total_windows > 0 {
+                        total_windows * box_size + (total_windows + 1) * spacing
+                    } else {
+                        0
+                    };
+                    
+                    let start_offset_x = if (self.width as usize) > content_width {
+                        (self.width as usize - content_width) / 2
+                    } else {
+                        0
+                    };
+
+                    for (index, (handle, _)) in sorted_windows.iter().enumerate() {
+                        let start_x = start_offset_x + spacing + index * (box_size + spacing);
+                        let end_x = start_x + box_size;
+                        if self.pointer_x >= start_x && self.pointer_x <= end_x {
+                            clicked_handle = Some((*handle).clone());
+                            break;
+                        }
+                    }
+
+                    if let Some(handle_id) = clicked_handle {
+                        self.menu_state.is_open = true;
+                        self.menu_state.x = self.pointer_x;
+                        self.menu_state.y = self.pointer_y;
+                        self.menu_state.target_window = Some(handle_id);
+                        self.draw(qh);
                     }
                 }
             }

@@ -35,6 +35,13 @@ impl FontManager {
     pub fn new(_bytes: &[u8]) -> Self { FontManager }
 }
 
+pub struct MenuState {
+    pub x: usize,
+    pub y: usize,
+    pub target_window: Option<ObjectId>,
+    pub is_open: bool,
+}
+
 pub struct AppState {
 	pub connection: Connection,
     pub registry_state: RegistryState,
@@ -53,7 +60,10 @@ pub struct AppState {
     pub wl_seat: Option<WlSeat>,
     pub wl_pointer: Option<WlPointer>,
     pub pointer_x: usize,
+    pub pointer_y: usize,
     pub open_windows: HashMap<ObjectId, WindowDiagnostics>,
+    pub pinned_apps: Vec<String>,
+    pub menu_state: MenuState,
     pub needs_redraw: bool,
 }
 
@@ -65,6 +75,15 @@ impl AppState {
     pub fn draw(&mut self, _qh: &wayland_client::QueueHandle<Self>) {
         let box_size = 48;
         let spacing = 12;
+        
+        // Count total unique items (pinned or open)
+        let mut total_apps = self.pinned_apps.len();
+        for (id, _) in &self.open_windows {
+            // This is a simplification; ideally we'd match app_ids
+            total_apps += 1;
+        }
+        // For now, let's stick to open windows to keep it simple, 
+        // we can integrate pinning later if needed.
         let total_windows = self.open_windows.len();
         
         // Calculate required width based on icons, but maintain a minimum width
@@ -74,9 +93,13 @@ impl AppState {
             100 // Minimal width for empty dock
         };
 
+        // Increase height if menu is open
+        let target_height = if self.menu_state.is_open { 200 } else { 60 };
+
         // If the surface size needs to change, update it
-        if content_width != self.width {
+        if content_width != self.width || target_height != self.height {
             self.width = content_width;
+            self.height = target_height;
             if let Some(ref surface) = self.layer_surface {
                 surface.set_size(self.width, self.height);
                 surface.wl_surface().commit();
@@ -97,7 +120,7 @@ impl AppState {
             .expect("Failed to create layout backing memory buffer");
 
         // Execute your local render loop code!
-        render::render_windows(canvas, width, height, &self.open_windows);
+        render::render_windows(canvas, width, height, &self.open_windows, &self.menu_state);
 
         if let Some(ref surface) = self.layer_surface {
             buffer.attach_to(surface.wl_surface()).expect("Failed to blit surface memory buffer");
@@ -149,7 +172,15 @@ fn main() {
         wl_seat: None,
         wl_pointer: None,
         pointer_x: 0,
+        pointer_y: 0,
         open_windows: HashMap::new(),
+        pinned_apps: Vec::new(),
+        menu_state: MenuState {
+            x: 0,
+            y: 0,
+            target_window: None,
+            is_open: false,
+        },
 		needs_redraw: false,
     };
 
