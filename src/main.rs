@@ -63,6 +63,26 @@ pub struct AppState {
 // Replace the `impl AppState` block inside src/main.rs with this:
 impl AppState {
     pub fn draw(&mut self, _qh: &wayland_client::QueueHandle<Self>) {
+        let box_size = 48;
+        let spacing = 12;
+        let total_windows = self.open_windows.len();
+        
+        // Calculate required width based on icons, but maintain a minimum width
+        let content_width = if total_windows > 0 {
+            (total_windows * box_size + (total_windows + 1) * spacing) as u32
+        } else {
+            100 // Minimal width for empty dock
+        };
+
+        // If the surface size needs to change, update it
+        if content_width != self.width {
+            self.width = content_width;
+            if let Some(ref surface) = self.layer_surface {
+                surface.set_size(self.width, self.height);
+                surface.wl_surface().commit();
+            }
+        }
+
         let width = self.width;
         let height = self.height;
 

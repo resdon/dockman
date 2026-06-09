@@ -171,8 +171,21 @@ impl PointerHandler for AppState {
                     let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
                     sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
                     
+                    let total_windows = sorted_windows.len();
+                    let content_width = if total_windows > 0 {
+                        total_windows * box_size + (total_windows + 1) * spacing
+                    } else {
+                        0
+                    };
+                    
+                    let start_offset_x = if (self.width as usize) > content_width {
+                        (self.width as usize - content_width) / 2
+                    } else {
+                        0
+                    };
+
                     for (index, (handle, _)) in sorted_windows.iter().enumerate() {
-                        let start_x = spacing + index * (box_size + spacing);
+                        let start_x = start_offset_x + spacing + index * (box_size + spacing);
                         let end_x = start_x + box_size;
                         if self.pointer_x >= start_x && self.pointer_x <= end_x {
                             // Dereference the shared reference to clone the ObjectId

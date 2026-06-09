@@ -27,11 +27,26 @@ pub fn render_windows(
     // Layout configuration variables
     let box_size: usize = 48; 
     let spacing: usize = 12;
+    
+    // Calculate total width required for all icons and center them
+    let total_windows = sorted_windows.len();
+    let content_width = if total_windows > 0 {
+        total_windows * box_size + (total_windows + 1) * spacing
+    } else {
+        0
+    };
+    
+    let start_offset_x = if (width as usize) > content_width {
+        (width as usize - content_width) / 2
+    } else {
+        0
+    };
+
     let start_y: usize = ((height as usize) - box_size) / 2; // Vertically center boxes
 
     for (index, window) in sorted_windows.iter().enumerate() {
-        // Calculate bounded horizontal screen offsets
-        let start_x = spacing + index * (box_size + spacing);
+        // Calculate centered horizontal screen offsets
+        let start_x = start_offset_x + spacing + index * (box_size + spacing);
         
         // Prevent drawing off-screen horizontally
         if start_x + box_size > width as usize {
