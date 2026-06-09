@@ -1,1 +1,5 @@
-target/
+/target
+/dockman
+/pkg
+/src/dockman
+/*.pkg.tar.zst

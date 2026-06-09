@@ -164,10 +164,58 @@ impl PointerHandler for AppState {
             self.pointer_x = event.position.0 as usize;
             self.pointer_y = event.position.1 as usize;
 
-            if let PointerEventKind::Press { button, .. } = event.kind {
-                let box_size = 48;
-                let spacing = 12;
+            let box_size = 48;
+            let spacing = 12;
+            let dock_height = 60;
 
+            // Recalculate layout (must match render.rs)
+            let mut apps_in_dock = Vec::new();
+            let mut running_by_app: HashMap<String, Vec<ObjectId>> = HashMap::new();
+            for app_id in &self.pinned_apps { apps_in_dock.push(app_id.clone()); }
+            let mut sorted_windows: Vec<(&ObjectId, &WindowDiagnostics)> = self.open_windows.iter().collect();
+            sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
+            for (id, win) in &sorted_windows {
+                running_by_app.entry(win.app_id.clone()).or_insert_with(Vec::new).push((*id).clone());
+                if !apps_in_dock.contains(&win.app_id) { apps_in_dock.push(win.app_id.clone()); }
+            }
+            let total_items = apps_in_dock.len();
+            let content_width = if total_items > 0 { total_items * box_size + (total_items + 1) * spacing } else { 0 };
+            let start_offset_x = if (self.width as usize) > content_width { (self.width as usize - content_width) / 2 } else { 0 };
+
+            if let PointerEventKind::Motion { .. } = event.kind {
+                let mut found_hover = false;
+                if self.pointer_y >= (self.height as usize - dock_height) {
+                    for (index, app_id) in apps_in_dock.iter().enumerate() {
+                        let start_x = start_offset_x + spacing + index * (box_size + spacing);
+                        let end_x = start_x + box_size;
+                        if self.pointer_x >= start_x && self.pointer_x <= end_x {
+                            self.hover_state.is_visible = true;
+                            self.hover_state.x = start_x + box_size / 2;
+                            self.hover_state.app_id = Some(app_id.clone());
+                            found_hover = true;
+                            break;
+                        }
+                    }
+                }
+                if !found_hover && self.hover_state.is_visible {
+                    // Check if we are hovering over the hover menu itself
+                    let menu_width = 200;
+                    let item_h = 30;
+                    let windows_count = self.hover_state.app_id.as_ref().and_then(|id| running_by_app.get(id)).map(|v| v.len()).unwrap_or(0);
+                    let menu_height = windows_count * item_h;
+                    let menu_x = self.hover_state.x.saturating_sub(menu_width / 2).min(self.width as usize - menu_width);
+                    let menu_y = (self.height as usize - dock_height).saturating_sub(menu_height + 10);
+
+                    if !(self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
+                         self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height) {
+                        self.hover_state.is_visible = false;
+                        self.hover_state.app_id = None;
+                    }
+                }
+                self.draw(qh);
+            }
+
+            if let PointerEventKind::Press { button, .. } = event.kind {
                 if button == 272 { // BTN_LEFT
                     // 1. Check if we clicked on the context menu
                     if self.menu_state.is_open {
@@ -199,32 +247,22 @@ impl PointerHandler for AppState {
                                                 "/usr/share/dockman/launcher.sh".to_string()
                                             };
                                             println!("[LAUNCHER] Spawning {} via {}", app_id, launcher_path);
-                                            let _ = std::process::Command::new("sh")
-                                                .arg(launcher_path)
-                                                .arg(app_id)
-                                                .spawn();
+                                            let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn();
                                         }
                                     },
                                     1 => { // Close
                                         if let Some(handle_id) = &self.menu_state.target_window {
-                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) {
-                                                window_info.handle.close();
-                                            }
+                                            if let Some(window_info) = self.open_windows.get_mut(handle_id) { window_info.handle.close(); }
                                         }
                                     },
                                     2 => { // Pin/Unpin
                                         if self.pinned_apps.contains(&app_id) {
-                                            println!("[MENU] Unpinning {}", app_id);
-                                            self.pinned_apps.remove(&app_id);
+                                            self.pinned_apps.retain(|id| id != &app_id);
                                         } else {
-                                            println!("[MENU] Pinning {}", app_id);
-                                            self.pinned_apps.insert(app_id.clone());
-                                            // If it's running, we might already have the icon in icon_cache or open_windows
+                                            self.pinned_apps.push(app_id.clone());
                                             if let Some(handle_id) = &self.menu_state.target_window {
-                                                if let Some(window_info) = self.open_windows.get(handle_id) {
-                                                    if let Some(ref rgba) = window_info.icon_rgba {
-                                                        self.icon_cache.insert(app_id, (rgba.clone(), window_info.icon_size));
-                                                    }
+                                                if let Some(win) = self.open_windows.get(handle_id) {
+                                                    if let Some(ref rgba) = win.icon_rgba { self.icon_cache.insert(app_id, (rgba.clone(), win.icon_size)); }
                                                 }
                                             }
                                         }
@@ -236,131 +274,71 @@ impl PointerHandler for AppState {
                             self.draw(qh);
                             return;
                         } else {
-                            // Clicked outside menu, close it
                             self.menu_state.is_open = false;
                             self.draw(qh);
-                            // Continue to check if we clicked an icon
                         }
                     }
 
-                    let mut clicked_handle: Option<ObjectId> = None;
-                    let mut running_app_ids = HashSet::new();
-                    let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
-                    sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
-                    for (_, w) in &sorted_windows { running_app_ids.insert(w.app_id.clone()); }
+                    // 2. Check if we clicked on the hover menu
+                    if self.hover_state.is_visible {
+                        let menu_width = 200;
+                        let item_h = 30;
+                        if let Some(ref app_id) = self.hover_state.app_id {
+                            if let Some(windows) = running_by_app.get(app_id) {
+                                let menu_height = windows.len() * item_h;
+                                let menu_x = self.hover_state.x.saturating_sub(menu_width / 2).min(self.width as usize - menu_width);
+                                let menu_y = (self.height as usize - dock_height).saturating_sub(menu_height + 10);
 
-                    let mut pinned_not_running: Vec<String> = self.pinned_apps.iter()
-                        .filter(|id| !running_app_ids.contains(*id))
-                        .cloned()
-                        .collect();
-                    pinned_not_running.sort();
+                                if self.pointer_x >= menu_x && self.pointer_x <= menu_x + menu_width &&
+                                   self.pointer_y >= menu_y && self.pointer_y <= menu_y + menu_height {
+                                    let idx = (self.pointer_y - menu_y) / item_h;
+                                    if let Some(handle_id) = windows.get(idx) {
+                                        if let Some(win) = self.open_windows.get_mut(handle_id) {
+                                            if let Some(seat) = &self.wl_seat { win.handle.activate(seat); }
+                                        }
+                                    }
+                                    self.hover_state.is_visible = false;
+                                    self.draw(qh);
+                                    return;
+                                }
+                            }
+                        }
+                    }
 
-                    let total_items = sorted_windows.len() + pinned_not_running.len();
-                    let content_width = if total_items > 0 {
-                        total_items * box_size + (total_items + 1) * spacing
-                    } else {
-                        0
-                    };
-                    
-                    let start_offset_x = if (self.width as usize) > content_width {
-                        (self.width as usize - content_width) / 2
-                    } else {
-                        0
-                    };
-
-                    // Combined list for hit detection (must match render.rs order)
-                    let mut items = Vec::new();
-                    for id in pinned_not_running { items.push((id, None)); }
-                    for (handle, w) in sorted_windows { items.push((w.app_id.clone(), Some(handle.clone()))); }
-
-                    for (index, (app_id, handle)) in items.iter().enumerate() {
+                    // 3. Check icons
+                    for (index, app_id) in apps_in_dock.iter().enumerate() {
                         let start_x = start_offset_x + spacing + index * (box_size + spacing);
                         let end_x = start_x + box_size;
                         if self.pointer_x >= start_x && self.pointer_x <= end_x {
-                            if let Some(h) = handle {
-                                clicked_handle = Some(h.clone());
+                            if let Some(windows) = running_by_app.get(app_id) {
+                                // Toggle focus/minimize for the LAST active or first window
+                                if let Some(handle_id) = windows.first() {
+                                    let was_active = self.open_windows.get(handle_id).map(|w| w.is_activated).unwrap_or(false);
+                                    if let Some(win) = self.open_windows.get_mut(handle_id) {
+                                        if was_active { win.handle.set_minimized(); }
+                                        else { if let Some(seat) = &self.wl_seat { win.handle.activate(seat); } }
+                                    }
+                                }
                             } else {
-                                // Launch pinned app using the launcher script
-                                let launcher_path = if std::path::Path::new("./launcher.sh").exists() {
-                                    "./launcher.sh".to_string()
-                                } else {
-                                    "/usr/share/dockman/launcher.sh".to_string()
-                                };
-
-                                println!("[LAUNCHER] Spawning {} via {}", app_id, launcher_path);
-                                let _ = std::process::Command::new("sh")
-                                    .arg(launcher_path)
-                                    .arg(app_id)
-                                    .spawn();
+                                // Launch
+                                let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() }
+                                                    else { "/usr/share/dockman/launcher.sh".to_string() };
+                                let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn();
                             }
+                            self.connection.flush().expect("Flush failed");
                             break;
                         }
                     }
-                    
-                    // Bind the ID safely and perform the action
-                    if let Some(handle_id) = clicked_handle {
-                        // 1. Capture the current state of the clicked window
-                        let was_active = self.open_windows.get(&handle_id)
-                            .map(|w| w.is_activated)
-                            .unwrap_or(false);
-
-                        // 2. Retrieve the one that was clicked and toggle its state
-                        if let Some(window_info) = self.open_windows.get_mut(&handle_id) {
-                            // Mark as pending so we know an action is in flight
-                            window_info.is_pending = true; 
-                            
-                            // Issue the protocol request based on PREVIOUS state
-                            if was_active {
-                                // Already active? Minimize it.
-                                window_info.handle.set_minimized();
-                            } else {
-                                // Not active? Activate it.
-                                if let Some(seat) = &self.wl_seat {
-                                    window_info.handle.activate(seat);
-                                }
-                            }
-                            
-                            self.connection.flush().expect("Flush failed");
-                        }
-                    }
                 } else if button == 273 { // BTN_RIGHT
-                    let mut running_app_ids = HashSet::new();
-                    let mut sorted_windows: Vec<_> = self.open_windows.iter().collect();
-                    sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name));
-                    for (_, w) in &sorted_windows { running_app_ids.insert(w.app_id.clone()); }
-
-                    let mut pinned_not_running: Vec<String> = self.pinned_apps.iter()
-                        .filter(|id| !running_app_ids.contains(*id))
-                        .cloned()
-                        .collect();
-                    pinned_not_running.sort();
-
-                    let total_items = sorted_windows.len() + pinned_not_running.len();
-                    let content_width = if total_items > 0 {
-                        total_items * box_size + (total_items + 1) * spacing
-                    } else {
-                        0
-                    };
-                    
-                    let start_offset_x = if (self.width as usize) > content_width {
-                        (self.width as usize - content_width) / 2
-                    } else {
-                        0
-                    };
-
-                    let mut items = Vec::new();
-                    for id in pinned_not_running { items.push((id, None)); }
-                    for (handle, w) in sorted_windows { items.push((w.app_id.clone(), Some(handle.clone()))); }
-
-                    for (index, (app_id, handle)) in items.iter().enumerate() {
+                    for (index, app_id) in apps_in_dock.iter().enumerate() {
                         let start_x = start_offset_x + spacing + index * (box_size + spacing);
                         let end_x = start_x + box_size;
                         if self.pointer_x >= start_x && self.pointer_x <= end_x {
                             self.menu_state.is_open = true;
                             self.menu_state.x = self.pointer_x;
                             self.menu_state.y = self.pointer_y;
-                            self.menu_state.target_window = handle.clone();
                             self.menu_state.target_app_id = Some(app_id.clone());
+                            self.menu_state.target_window = running_by_app.get(app_id).and_then(|v| v.first().cloned());
                             self.draw(qh);
                             break;
                         }

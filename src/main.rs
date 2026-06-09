@@ -30,9 +30,14 @@ pub mod render;
 use handlers::*;
 
 // 2. Mock FontManager structure to fix E0425 and E0433
-pub struct FontManager;
+pub struct FontManager {
+    pub font: fontdue::Font,
+}
 impl FontManager {
-    pub fn new(_bytes: &[u8]) -> Self { FontManager }
+    pub fn new(bytes: &[u8]) -> Self { 
+        let font = fontdue::Font::from_bytes(bytes, fontdue::FontSettings::default()).unwrap();
+        FontManager { font } 
+    }
 }
 
 pub struct MenuState {
@@ -41,6 +46,12 @@ pub struct MenuState {
     pub target_window: Option<ObjectId>,
     pub target_app_id: Option<String>,
     pub is_open: bool,
+}
+
+pub struct HoverState {
+    pub x: usize,
+    pub app_id: Option<String>,
+    pub is_visible: bool,
 }
 
 pub struct AppState {
@@ -63,9 +74,10 @@ pub struct AppState {
     pub pointer_x: usize,
     pub pointer_y: usize,
     pub open_windows: HashMap<ObjectId, WindowDiagnostics>,
-    pub pinned_apps: HashSet<String>,
+    pub pinned_apps: Vec<String>,
     pub icon_cache: HashMap<String, (Vec<u8>, u32)>,
     pub menu_state: MenuState,
+    pub hover_state: HoverState,
     pub needs_redraw: bool,
 }
 
@@ -78,21 +90,23 @@ impl AppState {
         let box_size = 48;
         let spacing = 12;
         
-        // Identify all unique apps that should be in the dock
-        let mut running_app_ids = HashSet::new();
-        for window in self.open_windows.values() {
-            running_app_ids.insert(window.app_id.clone());
+        // Group running windows by app_id
+        let mut apps_in_dock = Vec::new();
+        let mut running_by_app: HashMap<String, Vec<ObjectId>> = HashMap::new();
+        
+        // Use pinned apps as the base order
+        for app_id in &self.pinned_apps {
+            apps_in_dock.push(app_id.clone());
         }
-
-        // Count items: all open windows + pinned apps that are NOT running
-        let mut pinned_not_running_count = 0;
-        for pinned_id in &self.pinned_apps {
-            if !running_app_ids.contains(pinned_id) {
-                pinned_not_running_count += 1;
+        
+        for (id, win) in &self.open_windows {
+            running_by_app.entry(win.app_id.clone()).or_insert_with(Vec::new).push(id.clone());
+            if !apps_in_dock.contains(&win.app_id) {
+                apps_in_dock.push(win.app_id.clone());
             }
         }
         
-        let total_items = self.open_windows.len() + pinned_not_running_count;
+        let total_items = apps_in_dock.len();
         
         // Calculate required width based on icons, but maintain a minimum width
         let content_width = if total_items > 0 {
@@ -101,8 +115,8 @@ impl AppState {
             100 // Minimal width for empty dock
         };
 
-        // Increase height if menu is open
-        let target_height = if self.menu_state.is_open { 200 } else { 60 };
+        // Increase height if menu or hover is open
+        let target_height = if self.menu_state.is_open || self.hover_state.is_visible { 200 } else { 60 };
 
         // If the surface size needs to change, update it
         if content_width != self.width || target_height != self.height {
@@ -128,7 +142,15 @@ impl AppState {
             .expect("Failed to create layout backing memory buffer");
 
         // Execute your local render loop code!
-        render::render_windows(canvas, width, height, &self.open_windows, &self.pinned_apps, &self.icon_cache, &self.menu_state);
+        render::render_windows(
+            canvas, width, height, 
+            &self.open_windows, 
+            &self.pinned_apps, 
+            &self.icon_cache, 
+            &self.menu_state,
+            &self.hover_state,
+            &self.font_manager
+        );
 
         if let Some(ref surface) = self.layer_surface {
             buffer.attach_to(surface.wl_surface()).expect("Failed to blit surface memory buffer");
@@ -182,7 +204,7 @@ fn main() {
         pointer_x: 0,
         pointer_y: 0,
         open_windows: HashMap::new(),
-        pinned_apps: HashSet::new(),
+        pinned_apps: Vec::new(),
         icon_cache: HashMap::new(),
         menu_state: MenuState {
             x: 0,
@@ -190,6 +212,11 @@ fn main() {
             target_window: None,
             target_app_id: None,
             is_open: false,
+        },
+        hover_state: HoverState {
+            x: 0,
+            app_id: None,
+            is_visible: false,
         },
 		needs_redraw: false,
     };
