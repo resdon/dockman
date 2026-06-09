@@ -39,6 +39,7 @@ pub struct MenuState {
     pub x: usize,
     pub y: usize,
     pub target_window: Option<ObjectId>,
+    pub target_app_id: Option<String>,
     pub is_open: bool,
 }
 
@@ -187,6 +188,7 @@ fn main() {
             x: 0,
             y: 0,
             target_window: None,
+            target_app_id: None,
             is_open: false,
         },
 		needs_redraw: false,

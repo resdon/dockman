@@ -31,6 +31,7 @@ check() {
 package() {
   cd "$pkgname"
   install -Dm755 "target/release/dockman" "$pkgdir/usr/bin/dockman"
+  install -Dm755 "launcher.sh" "$pkgdir/usr/share/dockman/launcher.sh"
   install -Dm644 "font.ttf" "$pkgdir/usr/share/dockman/font.ttf"
   install -Dm644 "menu.png" "$pkgdir/usr/share/dockman/menu.png"
 }
