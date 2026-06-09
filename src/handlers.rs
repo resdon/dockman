@@ -157,38 +157,33 @@ impl PointerHandler for AppState {
         _pointer: &wayland_client::protocol::wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
-		// --- GRACE PERIOD CHECK ---
-        if let Some(leave_time) = self.hover_state.last_leave_time {
-            if leave_time.elapsed().as_millis() > 10 { 
-                self.menu_state.is_open = false;
-                self.hover_state.is_visible = false;
-                self.hover_state.last_leave_time = None;
-                self.draw(qh); // Trigger redraw after state collapse
-            }
-        }    	
         if events.is_empty() { return; }
 
-        self.last_interact_time = std::time::Instant::now(); // Update interaction time
-        
+        self.last_interact_time = std::time::Instant::now(); 
         let mut layer_changed = false;
 
-        // --- STEP 1: Parse the Frame Packet & Clear Leave Timestamp ---
+        // --- STEP 1: Parse the Frame Packet & Handle Instant Leave ---
         for event in events {
             match event.kind {
                 PointerEventKind::Enter { .. } | PointerEventKind::Motion { .. } => {
                     self.pointer_x = event.position.0 as usize;
                     self.pointer_y = event.position.1 as usize;
-                    self.hover_state.last_leave_time = None; // FIX: Reset timer on safe entry/motion
                 }
                 PointerEventKind::Leave { .. } => {
-					// Instead of immediate collapse, set a timestamp
-					self.hover_state.last_leave_time = Some(std::time::Instant::now());
+                    // FIX: When the pointer completely leaves the dock window, clear everything 
+                    // instantly. This avoids hanging when no further pointer events are sent.
+                    if self.hover_state.is_visible || self.menu_state.is_open {
+                        self.hover_state.is_visible = false;
+                        self.hover_state.app_id = None;
+                        self.menu_state.is_open = false;
+                        layer_changed = true;
+                    }
                 }
                 _ => {}
             }
         }
 
-        // --- STEP 2: Unified Layout Metrics (Must perfectly mirror render.rs) ---
+        // --- STEP 2: Unified Layout Metrics ---
         let current_surface_height = self.height as usize; 
         let dock_height = 60; 
         let box_size = 48; 
@@ -212,12 +207,11 @@ impl PointerHandler for AppState {
         
         let dock_top_bound = current_surface_height.saturating_sub(dock_height);
 
-		// --- STEP 3: Unified Hover Logic (Fixed Blinking & Menu Navigation) ---
+        // --- STEP 3: Unified Hover & Bounds Tracking ---
         let mut should_be_visible = false;
         let mut new_app_id = None;
         let mut new_x = self.hover_state.x;
 
-        // FIX: Accept both expanded 200px and unexpanded 60px layouts to prevent race conditions during resize transitions
         let is_over_icons = self.pointer_y >= dock_top_bound || (current_surface_height == 200 && self.pointer_y <= 60);
 
         if is_over_icons {
@@ -234,7 +228,6 @@ impl PointerHandler for AppState {
             }
         }
 
-        // FIX: If not hovering dock icons directly, evaluate if pointer is browsing inside the Hover Preview Window bounds
         if !should_be_visible && self.hover_state.is_visible {
             if let Some(ref app_id) = self.hover_state.app_id {
                 if let Some(windows) = running_by_app.get(app_id) {
@@ -251,8 +244,48 @@ impl PointerHandler for AppState {
                 }
             }
         }
+		// ==========================================
+        //  ADD THIS: HOVER STAY-ALIVE GRACE PERIOD
+        // ==========================================
+        if !should_be_visible && self.hover_state.is_visible {
+            // Start the clock the exact frame the mouse leaves a valid hover zone
+            if self.hover_state.last_leave_time.is_none() {
+                self.hover_state.last_leave_time = Some(std::time::Instant::now());
+            }
+            
+            if let Some(leave_time) = self.hover_state.last_leave_time {
+                // Change 400 to whatever millisecond threshold feels best for you
+                if leave_time.elapsed().as_millis() < 1000 { 
+                    should_be_visible = true; // Force it to stay open
+                    new_app_id = self.hover_state.app_id.clone();
+                    new_x = self.hover_state.x;
+                } else {
+                    self.hover_state.last_leave_time = None; // Time's up! Clean up timer
+                }
+            }
+        } else {
+            // Mouse is back over an icon or the preview window, reset the clock
+            self.hover_state.last_leave_time = None;
+        }
+        // ==========================================		
+        // FIX: Quick dismiss if context menu is open but mouse wiggles away from it inside the dock
+        if self.menu_state.is_open {
+            let menu_width = MENU_WIDTH as usize;
+            let menu_height = MENU_HEIGHT as usize;
+            let menu_x = self.menu_state.x.min((self.width as usize).saturating_sub(menu_width));
+            let menu_y = self.menu_state.y.saturating_sub(menu_height);
+            let leeway = 20;
 
-        // Apply state changes atomically
+            if self.pointer_x < menu_x.saturating_sub(leeway)
+                || self.pointer_x > menu_x + menu_width + leeway
+                || self.pointer_y < menu_y.saturating_sub(leeway)
+                || self.pointer_y > menu_y + menu_height + leeway
+            {
+                self.menu_state.is_open = false;
+                layer_changed = true;
+            }
+        }
+
         if should_be_visible != self.hover_state.is_visible || new_app_id != self.hover_state.app_id {
             self.hover_state.is_visible = should_be_visible;
             self.hover_state.app_id = new_app_id;
@@ -260,12 +293,12 @@ impl PointerHandler for AppState {
             layer_changed = true;
         }
 
-        // --- STEP 4: Instantly Handle Clicks (Using Synchronized Bounds) ---
+        // --- STEP 4: Instantly Handle Clicks ---
         for event in events {
             if let PointerEventKind::Press { button, .. } = event.kind { 
                 if button == 272 { // Left Click
                     
-                    // A. Click inside Context Menu
+                    // A. Context Menu Handling
                     if self.menu_state.is_open { 
                         let menu_width = MENU_WIDTH as usize; 
                         let menu_height = MENU_HEIGHT as usize; 
@@ -281,49 +314,74 @@ impl PointerHandler for AppState {
                             
                             if let Some(app_id) = app_id { 
                                 match clicked_item {
-                                    0 => { // Focus
+                                    0 => {
                                         if let Some(handle_id) = &self.menu_state.target_window { 
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
                                                 if let Some(seat) = &self.wl_seat { window_info.handle.activate(seat); } 
                                             }
                                         }
                                     },
-                                    1 => { // Open New
+                                    1 => {
                                         let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() } 
                                                             else { "/usr/share/dockman/launcher.sh".to_string() }; 
                                         let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
                                     },
-                                    2 => { // Minimize
+                                    2 => {
                                         if let Some(handle_id) = &self.menu_state.target_window { 
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
                                                 window_info.handle.set_minimized(); 
                                             }
                                         }
                                     },
-                                    3 => { // Close
+                                    3 => {
                                         if let Some(handle_id) = &self.menu_state.target_window { 
                                             if let Some(window_info) = self.open_windows.get_mut(handle_id) { 
                                                 window_info.handle.close(); 
                                             }
                                         }
                                     },
-                                    4 => { // Pin/Unpin
-                                        let mut pinned = crate::modules::persistence::load_pinned_apps(); 
-                                        if pinned.contains(&app_id) { pinned.remove(&app_id); } 
-                                        else { pinned.insert(app_id.clone()); } 
-                                        crate::modules::persistence::save_pinned_apps(&pinned); 
-                                        self.pinned_apps = pinned.into_iter().collect(); 
-                                    },
+									4 => {
+									    let mut pinned = crate::modules::persistence::load_pinned_apps(); 
+									    if pinned.contains(&app_id) { 
+									        pinned.remove(&app_id); 
+									        // Optional: you can delete the .raw file here if you want clean-up on unpin
+									    } else { 
+									        pinned.insert(app_id.clone()); 
+									        
+									        // INTERCEPT & CACHE IMAGE PERMANENTLY
+									        // First check our temporary dynamic icon cache
+									        if let Some((rgba, size)) = self.icon_cache.get(&app_id) {
+									            crate::cache::save_cached_icon(&app_id, *size, *size, rgba);
+									        } 
+									        // Fallback: extract directly from the active window payload
+									        else if let Some(window_info) = self.open_windows.values().find(|w| w.app_id == app_id) {
+									            if let Some(ref rgba) = window_info.icon_rgba {
+									                crate::cache::save_cached_icon(
+									                    &app_id, 
+									                    window_info.icon_size, 
+									                    window_info.icon_size, 
+									                    rgba
+									                );
+									            }
+									        }
+									    } 
+									    crate::modules::persistence::save_pinned_apps(&pinned); 
+									    self.pinned_apps = pinned.into_iter().collect(); 
+									},
                                     _ => {}
                                 }
                             }
                             self.menu_state.is_open = false; 
                             self.draw(qh); 
                             return;
+                        } else {
+                            // Clicked outside context menu bounds -> dismiss instantly
+                            self.menu_state.is_open = false;
+                            layer_changed = true;
                         }
                     }
 
-                    // B. Click inside Hover Preview Menu
+                    // B. Hover Preview Menu Handling
                     if self.hover_state.is_visible { 
                         let menu_width = 200; 
                         let item_h = 30; 
@@ -349,7 +407,7 @@ impl PointerHandler for AppState {
                         }
                     }
 
-                    // C. Click on Dock Icons
+                    // C. Dock Icon Click Handling
                     if is_over_icons {
                         for (index, app_id) in apps_in_dock.iter().enumerate() {
                             let start_x = start_offset_x + spacing + index * (box_size + spacing); 
@@ -366,7 +424,7 @@ impl PointerHandler for AppState {
                                 } else {
                                     let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() } 
                                                         else { "/usr/share/dockman/launcher.sh".to_string() }; 
-                                    let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
+                                        let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
                                 }
                                 break;
                             }
@@ -396,19 +454,18 @@ impl PointerHandler for AppState {
             }
         }
 
-        // --- STEP 5: Force Downstream Sync ---
-		if layer_changed {
-		    self.needs_redraw = true; 
-		}
+        // --- STEP 5: Request Render Pipeline Synchronously ---
+        if layer_changed {
+            self.needs_redraw = true; 
+        }
 
-		if self.needs_redraw {
-		    self.draw(qh);
-		    self.needs_redraw = false; 
-		    let _ = self.connection.flush();
-		}
-	}
+        if self.needs_redraw {
+            self.draw(qh);
+            self.needs_redraw = false; 
+            let _ = self.connection.flush();
+        }
+    }
 }
-
 // =========================================================================
 // Foreign Toplevel Event Handlers
 // =========================================================================
@@ -472,28 +529,34 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
             }
             zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
                 println!("[WAYLAND DETECTOR] AppId registered string payload: '{}'", app_id);
-                if let Some(window) = state.open_windows.get_mut(&handle.id()) {
-                    window.app_id = app_id.clone();
-                    window.app_name = app_id.clone();
-                    let cleaned_app_id = app_id.trim();
-                    if !cleaned_app_id.is_empty() {
-						let icon_name = crate::lib::icon_utils::extract_icon_name_from_desktop_file(cleaned_app_id);
-                        let icon_path = crate::lib::icon_utils::locate_actual_icon_path(&icon_name, cleaned_app_id);
-                        let mut raw_pixels = None;
-                        let target_size = 48;
-                        if let Some(path) = icon_path {
-                            if let Some((_, _, rgba_data)) = crate::lib::terminal_graphics::load_image_raw_rgba(&path, target_size) {
-                                raw_pixels = Some(rgba_data.clone());
-                                // Also populate icon_cache for pinning
-                                state.icon_cache.insert(cleaned_app_id.to_string(), (rgba_data, target_size));
-                            }
-                        }
-                        window.icon_name = icon_name;
-                        window.icon_rgba = raw_pixels;
-                        window.icon_size = target_size;
-                    }
-                }
-                state.draw(qh);
+				if let Some(window) = state.open_windows.get_mut(&handle.id()) {
+				    window.app_id = app_id.clone();
+				    window.app_name = app_id.clone();
+				    let cleaned_app_id = app_id.trim();
+				    if !cleaned_app_id.is_empty() {
+				        let icon_name = crate::lib::icon_utils::extract_icon_name_from_desktop_file(cleaned_app_id);
+				        let icon_path = crate::lib::icon_utils::locate_actual_icon_path(&icon_name, cleaned_app_id);
+				        let mut raw_pixels = None;
+				        let target_size = 48;
+				        if let Some(path) = icon_path {
+				            if let Some((_, _, rgba_data)) = crate::lib::terminal_graphics::load_image_raw_rgba(&path, target_size) {
+				                raw_pixels = Some(rgba_data.clone());
+				                
+				                // 1. Populate the live runtime memory cache
+				                state.icon_cache.insert(cleaned_app_id.to_string(), (rgba_data.clone(), target_size));
+
+								// 2. FIX: Use .iter().any() to cleanly match &str against String elements
+				                if state.pinned_apps.iter().any(|app| app == cleaned_app_id) {
+				                    crate::cache::save_cached_icon(cleaned_app_id, target_size, target_size, &rgba_data);
+				                }
+				            }
+				        }
+				        window.icon_name = icon_name;
+				        window.icon_rgba = raw_pixels;
+				        window.icon_size = target_size;
+				    }
+				}
+				state.draw(qh);
             }
 			zwlr_foreign_toplevel_handle_v1::Event::State { state: state_bytes } => {
 			    let (activated, minimized) = parse_window_states(&state_bytes);

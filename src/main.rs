@@ -1,4 +1,5 @@
 pub mod lib;
+pub mod cache;
 
 use crate::lib::models::WindowDiagnostics;
 
@@ -25,6 +26,7 @@ use std::collections::HashMap;
 pub mod handlers;
 pub mod render;
 pub mod modules;
+
 
 // ...
 use modules::persistence;
@@ -180,12 +182,26 @@ fn main() {
 
     let seat_state = SeatState::new(&globals, &qh);
     
-    let font_bytes = std::fs::read("font.ttf")
+	let font_bytes = std::fs::read("font.ttf")
         .or_else(|_| std::fs::read("/usr/share/dockman/font.ttf"))
         .unwrap_or_else(|_| vec![0; 100]);
 
+    // =========================================================================
+    // 1. CREATE THE VARIABLES RIGHT BEFORE APPSTATE USES THEM
+    // =========================================================================
+    let pinned_vector = persistence::load_pinned_apps();
+    let mut permanent_icon_cache = HashMap::new();
+    for app_id in &pinned_vector {
+        if let Some((rgba, size)) = cache::load_cached_icon(app_id) {
+            permanent_icon_cache.insert(app_id.clone(), (rgba, size));
+        }
+    }
+
+    // =========================================================================
+    // 2. INITIALIZE THE FULL STATE MATCHING YOUR COMPOSITOR STRUCT
+    // =========================================================================
     let mut state = AppState {
-    	connection: conn.clone(),
+        connection: conn.clone(),
         registry_state,
         compositor_state,
         output_state,
@@ -197,15 +213,15 @@ fn main() {
         current_buffer: None,
         width: 100, 
         height: 60,
-        toplevel_manager: None, // Inject the safely bound manager instance here!
+        toplevel_manager: None, // This gets bound right below this block
         font_manager: FontManager::new(&font_bytes),
         wl_seat: None,
         wl_pointer: None,
         pointer_x: 0,
         pointer_y: 0,
         open_windows: HashMap::new(),
-        pinned_apps: persistence::load_pinned_apps().into_iter().collect(),
-        icon_cache: HashMap::new(),
+        pinned_apps: pinned_vector.into_iter().collect(), // Looked up safely now!
+        icon_cache: permanent_icon_cache,                 // Found in scope now!
         menu_state: MenuState {
             x: 0,
             y: 0,
@@ -220,18 +236,16 @@ fn main() {
             last_leave_time: None,
         },
         last_interact_time: std::time::Instant::now(),
-		needs_redraw: false,
-		last_mouse_pos: None,
+        needs_redraw: false,
+        last_mouse_pos: None,
     };
 
     // =========================================================================
-    // FIX: Revert type back to () to fix mismatched types error.
-    // FIX: Lift constraint to 1..=3 to solve the opcode 0 runtime panic.
+    // Your existing foreign_toplevel manager binding continues right below here
     // =========================================================================
     state.toplevel_manager = state.registry_state
-        .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ()) // Pass () here
+        .bind_one::<ZwlrForeignToplevelManagerV1, _, _>(&qh, 1..=3, ())
         .ok();
-
     
 
     println!("[DEBUG] Doing roundtrip...");
