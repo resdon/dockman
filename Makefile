@@ -1,18 +1,31 @@
-# Makefile
+# Makefile for dockman
 BINARY_NAME=dockman
-INSTALL_DIR=$(HOME)/.local/bin
-DESKTOP_ENTRY_DIR=$(HOME)/.local/share/applications
+INSTALL_BIN=$(HOME)/.local/bin
+DESKTOP_DIR=$(HOME)/.local/share/applications
+AUTOSTART_DIR=$(HOME)/.config/autostart
+
+.PHONY: build install uninstall
 
 build:
+	@echo "Compiling dockman..."
 	cargo build --release
 
 install: build
-	mkdir -p $(INSTALL_DIR)
-	cp target/release/$(BINARY_NAME) $(INSTALL_DIR)/$(BINARY_NAME)
-	mkdir -p $(DESKTOP_ENTRY_DIR)
-	# This installs the autostart entry
-	echo "[Desktop Entry]\nName=Dockman\nExec=$(INSTALL_DIR)/$(BINARY_NAME)\nType=Application\nCategories=Utility;" > $(DESKTOP_ENTRY_DIR)/$(BINARY_NAME).desktop
+	@echo "Installing dockman to $(INSTALL_BIN)..."
+	mkdir -p $(INSTALL_BIN)
+	cp target/release/$(BINARY_NAME) $(INSTALL_BIN)/
+	
+	@echo "Creating desktop entry..."
+	mkdir -p $(DESKTOP_DIR)
+	echo "[Desktop Entry]\nName=Dockman\nExec=$(INSTALL_BIN)/$(BINARY_NAME)\nType=Application\nCategories=Utility;" > $(DESKTOP_DIR)/$(BINARY_NAME).desktop
+	
+	@echo "Enabling autostart..."
+	mkdir -p $(AUTOSTART_DIR)
+	ln -sf $(DESKTOP_DIR)/$(BINARY_NAME).desktop $(AUTOSTART_DIR)/$(BINARY_NAME).desktop
+	@echo "Installation complete!"
 
 uninstall:
-	rm -f $(INSTALL_DIR)/$(BINARY_NAME)
-	rm -f $(DESKTOP_ENTRY_DIR)/$(BINARY_NAME).desktop
+	rm -f $(INSTALL_BIN)/$(BINARY_NAME)
+	rm -f $(DESKTOP_DIR)/$(BINARY_NAME).desktop
+	rm -f $(AUTOSTART_DIR)/$(BINARY_NAME).desktop
+	@echo "Uninstallation complete."
