@@ -2,6 +2,20 @@ use std::fs::{self, File};
 use std::io::{Read, Write};
 use std::path::PathBuf;
 
+
+/// Clears the cache directory on startup to ensure fresh data
+pub fn refresh_cache_on_launch() {
+    let cache_dir = get_cache_dir();
+    
+    if cache_dir.exists() {
+        if let Err(e) = fs::remove_dir_all(&cache_dir) {
+            eprintln!("Failed to clear cache: {}", e);
+        }
+    }
+    let _ = fs::create_dir_all(&cache_dir);
+    println!("[CACHE RELOADED]")
+}
+
 /// Resolves the default storage directory for cached app assets
 fn get_cache_dir() -> PathBuf {
     let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());

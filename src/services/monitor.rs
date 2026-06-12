@@ -120,6 +120,7 @@ fn load_image_raw_rgba(path: &Path, target_size: u32) -> Option<(u32, u32, Vec<u
         Some((target_size, target_size, pixmap.data().to_vec()))
     } else {
         let img = image::open(path).ok()?;
+        println!("{:?}", path.display());
         let scaled = img.resize_exact(target_size, target_size, image::imageops::FilterType::Lanczos3);
         let rgba = scaled.to_rgba8();
         Some((rgba.width(), rgba.height(), rgba.into_raw()))

@@ -1,7 +1,7 @@
 use crate::modules::context_menu::{MENU_WIDTH, MENU_HEIGHT, MENU_ITEM_HEIGHT, get_hover_menu_bounds};
 use std::collections::HashMap;
-pub use crate::lib::models::LastState;
-use crate::lib::models::WindowDiagnostics;
+pub use crate::models::LastState;
+use crate::models::WindowDiagnostics;
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler},
@@ -197,8 +197,16 @@ impl PointerHandler for AppState {
         sorted_windows.sort_by(|a, b| a.1.app_name.cmp(&b.1.app_name)); 
         
         for (id, win) in &sorted_windows {
-            running_by_app.entry(win.app_id.clone()).or_insert_with(Vec::new).push((*id).clone()); 
-            if !apps_in_dock.contains(&win.app_id) { apps_in_dock.push(win.app_id.clone()); } 
+            let app_id = if !win.app_id.is_empty() {
+                win.app_id.clone()
+            } else if !win.title.is_empty() {
+                win.title.clone()
+            } else {
+                "Unknown".to_string()
+            };
+
+            running_by_app.entry(app_id.clone()).or_insert_with(Vec::new).push((*id).clone()); 
+            if !apps_in_dock.contains(&app_id) { apps_in_dock.push(app_id); } 
         }
         
         let total_items = apps_in_dock.len(); 
@@ -322,9 +330,10 @@ impl PointerHandler for AppState {
                                         }
                                     },
                                     1 => {
-                                        let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() } 
-                                                            else { "/usr/share/dockman/launcher.sh".to_string() }; 
-                                        let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
+                                        let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() }
+                                                            else { "/usr/share/dockman/launcher.sh".to_string() };
+                                        println!("[DEBUG] Launching app via context menu: '{}'", app_id);
+                                        let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn();
                                     },
                                     2 => {
                                         if let Some(handle_id) = &self.menu_state.target_window { 
@@ -341,11 +350,25 @@ impl PointerHandler for AppState {
                                         }
                                     },
 									4 => {
+                                        // NORMALIZE ID BEFORE PINNING
+                                        let mut app_id = app_id;
+                                        if let Some(idx) = app_id.rfind('_') {
+                                            if app_id[idx+1..].chars().all(|c| c.is_numeric()) {
+                                                app_id = app_id[..idx].to_string();
+                                            }
+                                        }
+                                        if app_id.to_lowercase().contains("transmission") {
+                                            app_id = "transmission-gtk".to_string();
+                                        }
+
 									    let mut pinned = crate::modules::persistence::load_pinned_apps(); 
+                                        println!("[DEBUG] Pin toggle request for normalized app_id: '{}'", app_id);
 									    if pinned.contains(&app_id) { 
+                                            println!("[DEBUG] Removing app from pins: '{}'", app_id);
 									        pinned.remove(&app_id); 
 									        // Optional: you can delete the .raw file here if you want clean-up on unpin
 									    } else { 
+                                            println!("[DEBUG] Adding app to pins: '{}'", app_id);
 									        pinned.insert(app_id.clone()); 
 									        
 									        // INTERCEPT & CACHE IMAGE PERMANENTLY
@@ -355,7 +378,7 @@ impl PointerHandler for AppState {
 									        } 
 									        // Fallback: extract directly from the active window payload
 									        else if let Some(window_info) = self.open_windows.values().find(|w| w.app_id == app_id) {
-									            if let Some(ref rgba) = window_info.icon_rgba {
+									            if let Some(rgba) = &window_info.icon_rgba {
 									                crate::cache::save_cached_icon(
 									                    &app_id, 
 									                    window_info.icon_size, 
@@ -422,9 +445,22 @@ impl PointerHandler for AppState {
                                         }
                                     }
                                 } else {
-                                    let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() } 
-                                                        else { "/usr/share/dockman/launcher.sh".to_string() }; 
-                                        let _ = std::process::Command::new("sh").arg(launcher_path).arg(app_id).spawn(); 
+                                    let launcher_path = if std::path::Path::new("./launcher.sh").exists() { "./launcher.sh".to_string() }
+                                                        else { "/usr/share/dockman/launcher.sh".to_string() };
+                                    
+                                    // NORMALIZE ID BEFORE LAUNCHING
+                                    let mut normalized_app_id = app_id.clone();
+                                    if let Some(idx) = normalized_app_id.rfind('_') {
+                                        if normalized_app_id[idx+1..].chars().all(|c| c.is_numeric()) {
+                                            normalized_app_id = normalized_app_id[..idx].to_string();
+                                        }
+                                    }
+                                    if normalized_app_id.to_lowercase().contains("transmission") {
+                                        normalized_app_id = "transmission-gtk".to_string();
+                                    }
+
+                                    println!("[DEBUG] Launching app via icon click: '{}' (normalized to: '{}')", app_id, normalized_app_id);
+                                    let _ = std::process::Command::new("sh").arg(launcher_path).arg(normalized_app_id).spawn();
                                 }
                                 break;
                             }
@@ -436,11 +472,13 @@ impl PointerHandler for AppState {
                             let start_x = start_offset_x + spacing + index * (box_size + spacing); 
                             let end_x = start_x + box_size; 
                             if self.pointer_x >= start_x && self.pointer_x <= end_x { 
+                                println!("[DEBUG] Right-clicked index {}, app_id: '{}'", index, app_id);
                                 self.menu_state.is_open = true; 
                                 self.menu_state.x = self.pointer_x; 
                                 self.menu_state.y = self.pointer_y; 
                                 self.menu_state.target_app_id = Some(app_id.clone()); 
                                 let windows = running_by_app.get(app_id).map(|v| v.clone()).unwrap_or_default(); 
+                                println!("[DEBUG] Windows for app '{}': {:?}", app_id, windows);
                                 self.menu_state.target_window = windows.iter()
                                     .find(|id| self.open_windows.get(id).map(|w| w.is_activated).unwrap_or(false)) 
                                     .cloned() 
@@ -505,7 +543,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
         _conn: &Connection,
         qh: &QueueHandle<Self>,
     ) {
-        println!("[WAYLAND TRACKER EVENT ARRIVED] Got event: {:?}", event);
+        println!("[WAYLAND TRACKER EVENT ARRIVED] Handle: {:?}, Got event: {:?}", handle.id(), event);
 
         state.open_windows.entry(handle.id()).or_insert_with(|| {
             WindowDiagnostics::new(handle.clone())
@@ -518,6 +556,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
                 state.draw(qh);
             }
             zwlr_foreign_toplevel_handle_v1::Event::Done => {
+                state.update_window_icon(handle.id());
                 state.draw(qh);
             }
             zwlr_foreign_toplevel_handle_v1::Event::Title { title } => {
@@ -525,6 +564,7 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
                 if let Some(window) = state.open_windows.get_mut(&handle.id()) {
                     window.title = title;
                 }
+                state.update_window_icon(handle.id());
                 state.draw(qh);
             }
             zwlr_foreign_toplevel_handle_v1::Event::AppId { app_id } => {
@@ -532,30 +572,8 @@ impl Dispatch<ZwlrForeignToplevelHandleV1, ()> for AppState {
 				if let Some(window) = state.open_windows.get_mut(&handle.id()) {
 				    window.app_id = app_id.clone();
 				    window.app_name = app_id.clone();
-				    let cleaned_app_id = app_id.trim();
-				    if !cleaned_app_id.is_empty() {
-				        let icon_name = crate::lib::icon_utils::extract_icon_name_from_desktop_file(cleaned_app_id);
-				        let icon_path = crate::lib::icon_utils::locate_actual_icon_path(&icon_name, cleaned_app_id);
-				        let mut raw_pixels = None;
-				        let target_size = 48;
-				        if let Some(path) = icon_path {
-				            if let Some((_, _, rgba_data)) = crate::lib::terminal_graphics::load_image_raw_rgba(&path, target_size) {
-				                raw_pixels = Some(rgba_data.clone());
-				                
-				                // 1. Populate the live runtime memory cache
-				                state.icon_cache.insert(cleaned_app_id.to_string(), (rgba_data.clone(), target_size));
-
-								// 2. FIX: Use .iter().any() to cleanly match &str against String elements
-				                if state.pinned_apps.iter().any(|app| app == cleaned_app_id) {
-				                    crate::cache::save_cached_icon(cleaned_app_id, target_size, target_size, &rgba_data);
-				                }
-				            }
-				        }
-				        window.icon_name = icon_name;
-				        window.icon_rgba = raw_pixels;
-				        window.icon_size = target_size;
-				    }
 				}
+                state.update_window_icon(handle.id());
 				state.draw(qh);
             }
 			zwlr_foreign_toplevel_handle_v1::Event::State { state: state_bytes } => {

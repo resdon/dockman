@@ -1,7 +1,12 @@
-pub mod lib;
+
 pub mod cache;
 
-use crate::lib::models::WindowDiagnostics;
+pub use dockman_lib::models;
+pub use dockman_lib::icon_utils;
+pub use dockman_lib::terminal_graphics;
+pub use dockman_lib::get_icon_path;
+
+use crate::models::WindowDiagnostics;
 
 use wayland_client::Dispatch;
 use smithay_client_toolkit::shell::WaylandSurface;
@@ -87,6 +92,71 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub fn update_window_icon(&mut self, window_id: ObjectId) {
+        if let Some(window) = self.open_windows.get_mut(&window_id) {
+            let mut search_id = window.app_id.trim().to_string();
+            
+            // 0. Proactive cleaning: strip suffixes like _1234 (common for dynamic app_ids)
+            if let Some(idx) = search_id.rfind('_') {
+                if search_id[idx+1..].chars().all(|c| c.is_numeric()) {
+                    search_id = search_id[..idx].to_string();
+                }
+            }
+            let original_app_id = window.app_id.clone();
+            
+            // 1. Try to normalize app_id to a stable .desktop ID if it isn't one already
+            if !search_id.is_empty() {
+                // If it doesn't look like a standard ID, try to find the desktop file it belongs to
+                if !crate::icon_utils::get_icon_from_desktop(&search_id).is_some() {
+                    if let Some(resolved_id) = crate::icon_utils::find_desktop_file_by_exec(&search_id) {
+                        println!("[DEBUG] Normalized app_id '{}' -> '{}' via Exec match", search_id, resolved_id);
+                        search_id = resolved_id;
+                        window.app_id = search_id.clone();
+                    }
+                }
+            }
+
+            // 2. Fallback if app_id is still empty: try to resolve it from the window title
+            if search_id.is_empty() && !window.title.is_empty() {
+                if let Some(desktop_id) = crate::icon_utils::find_desktop_file_by_name(&window.title) {
+                    println!("[DEBUG] Resolved empty app_id for title '{}' -> '{}' via Name match", window.title, desktop_id);
+                    search_id = desktop_id;
+                    // We successfully derived a stable ID from the title!
+                    window.app_id = search_id.clone();
+                }
+            }
+
+            // HACK: Force icon for transmission if resolution failed
+            if search_id.to_lowercase().contains("transmission") && crate::get_icon_path(&search_id).is_none() {
+                 println!("[DEBUG] Transmission detected but icon lookup failed, forcing 'transmission-gtk'");
+                 search_id = "transmission-gtk".to_string();
+            }
+
+            if !search_id.is_empty() {
+                let icon_name = crate::icon_utils::extract_icon_name(&search_id);
+                let icon_path = crate::get_icon_path(&search_id);
+                println!("[DEBUG] App '{}' (orig: '{}') -> Icon Name: '{}', Path: {:?}", search_id, original_app_id, icon_name, icon_path);
+                
+                let mut raw_pixels = None;
+                let target_size = 48;
+                if let Some(path) = icon_path {
+                    if let Some((_, _, rgba_data)) = crate::terminal_graphics::load_image_raw_rgba(&path, target_size) {
+                        raw_pixels = Some(rgba_data.clone());
+                        self.icon_cache.insert(search_id.clone(), (rgba_data.clone(), target_size));
+                        if self.pinned_apps.contains(&search_id) {
+                            crate::cache::save_cached_icon(&search_id, target_size, target_size, &rgba_data);
+                        }
+                    }
+                }
+                window.icon_name = icon_name;
+                window.icon_rgba = raw_pixels;
+                window.icon_size = target_size;
+            } else {
+                println!("[DEBUG] Could not resolve any ID for window with title '{}'", window.title);
+            }
+        }
+    }
+
     pub fn draw(&mut self, qh: &wayland_client::QueueHandle<Self>) {
         let box_size = 48;
         let spacing = 12;
@@ -94,8 +164,18 @@ impl AppState {
 
         // Grouping logic
         let mut apps_in_dock: Vec<String> = self.pinned_apps.clone();
-        for id in self.open_windows.values().map(|w| w.app_id.clone()) {
-            if !apps_in_dock.contains(&id) { apps_in_dock.push(id); }
+        for window in self.open_windows.values() {
+            let id = if !window.app_id.is_empty() {
+                window.app_id.clone()
+            } else if !window.title.is_empty() {
+                window.title.clone()
+            } else {
+                "Unknown".to_string()
+            };
+            
+            if !apps_in_dock.contains(&id) { 
+                apps_in_dock.push(id); 
+            }
         }
 
         // Calculate dynamic width, but clamp to max_dock_width

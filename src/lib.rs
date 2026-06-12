@@ -1,15 +1,18 @@
 // src/lib.rs
-
 use std::path::{Path, PathBuf};
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use walkdir::WalkDir;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
-use linicon::lookup_icon;
 // Add this to the top of src/models.rs
 use wayland_protocols_wlr::foreign_toplevel::v1::client::zwlr_foreign_toplevel_handle_v1::ZwlrForeignToplevelHandleV1;
 
 pub use self::models::WindowDiagnostics;
+pub use self::models::LastState;
+pub use self::icon_utils::extract_icon_name;
+pub use self::terminal_graphics::load_image_raw_rgba;
+
+
 
 pub mod models {
 	use super::ZwlrForeignToplevelHandleV1;
@@ -59,21 +62,165 @@ pub mod models {
 	}
 }
 
+
 pub mod icon_utils {
     use super::*;
 
-    pub fn extract_icon_name_from_desktop_file(app_id: &str) -> String {
-        if app_id.is_empty() { return "unknown-icon".to_string(); }
-        let xdg_data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
-        let mut search_paths: Vec<PathBuf> = xdg_data_dirs.split(':').map(|s| Path::new(s).join("applications")).collect();
-        if let Ok(home) = std::env::var("HOME") { search_paths.insert(0, Path::new(&home).join(".local/share/applications")); }
+use std::fs;
+use std::path::PathBuf;
 
+	pub fn find_desktop_file_by_name(search_name: &str) -> Option<String> {
+	    let dirs = vec![
+	        PathBuf::from("/usr/share/applications"),
+	        PathBuf::from("/home/resdon/.local/share/applications"),
+	    ];
+
+	    for dir in dirs {
+	        if let Ok(entries) = fs::read_dir(dir) {
+	            for entry in entries.flatten() {
+	                let path = entry.path();
+	                if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
+	                    if let Ok(file) = File::open(&path) {
+	                        let reader = BufReader::new(file);
+	                        for line in reader.lines().flatten() {
+	                            if line.starts_with("Name=") {
+	                                let name = line["Name=".len()..].trim();
+	                                let title_lower = search_name.to_lowercase();
+	                                let name_lower = name.to_lowercase();
+	                                
+	                                // 1. Substring match
+	                                if title_lower.contains(&name_lower) || name_lower.contains(&title_lower) {
+	                                    return path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+	                                }
+
+	                                // 2. First word prefix match (e.g. "Task Manager" vs "Taskman")
+	                                let title_first = title_lower.split_whitespace().next().unwrap_or("");
+	                                let name_first = name_lower.split_whitespace().next().unwrap_or("");
+	                                if !title_first.is_empty() && (title_first.starts_with(name_first) || name_first.starts_with(title_first)) {
+	                                    return path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+	                                }
+	                            }
+	                        }
+	                    }
+	                }
+	            }
+	        }
+	    }
+	    None
+	}
+
+	pub fn find_desktop_file_by_exec(app_id: &str) -> Option<String> {
+	    let dirs = vec![
+	        PathBuf::from("/usr/share/applications"),
+	        PathBuf::from("/home/resdon/.local/share/applications"),
+	    ];
+	    
+	    // Clean up app_id: many compositors append PIDs or random strings (e.g. app_1234)
+	    let app_id_clean = app_id.split('_').next().unwrap_or(app_id).to_lowercase();
+
+	    for dir in dirs {
+	        if let Ok(entries) = fs::read_dir(dir) {
+	            for entry in entries.flatten() {
+	                let path = entry.path();
+	                if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
+	                    if let Ok(file) = File::open(&path) {
+	                        let reader = BufReader::new(file);
+	                        for line in reader.lines().flatten() {
+	                            if line.starts_with("Exec=") {
+	                                let exec_line = line["Exec=".len()..].trim().to_lowercase();
+	                                if let Some(binary_path) = exec_line.split_whitespace().next() {
+	                                    let binary_name = Path::new(binary_path).file_name()
+	                                        .and_then(|n| n.to_str())
+	                                        .unwrap_or(binary_path);
+	                                    
+	                                    if binary_name.contains(&app_id_clean) || app_id_clean.contains(binary_name) {
+	                                        return path.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string());
+	                                    }
+	                                }
+	                            }
+	                        }
+	                    }
+	                }
+	            }
+	        }
+	    }
+	    None
+	}
+
+	pub fn find_icon_by_name(search_name: &str) -> Option<String> {
+	    let dirs = vec![
+	        PathBuf::from("/usr/share/applications"),
+	        PathBuf::from("/home/resdon/.local/share/applications"),
+	    ];
+
+	    for dir in dirs {
+	        if let Ok(entries) = fs::read_dir(dir) {
+	            for entry in entries.flatten() {
+	                let path = entry.path();
+	                // Only process .desktop files
+	                if path.extension().and_then(|s| s.to_str()) == Some("desktop") {
+	                    if let Ok(file) = File::open(&path) {
+	                        let reader = BufReader::new(file);
+	                        let mut current_name = String::new();
+	                        let mut current_icon = String::new();
+
+	                        for line in reader.lines().flatten() {
+	                            if line.starts_with("Name=") {
+	                                current_name = line["Name=".len()..].trim().to_string();
+	                            }
+	                            if line.starts_with("Icon=") {
+	                                current_icon = line["Icon=".len()..].trim().to_string();
+	                            }
+	                            // If we found the right app, return the icon immediately
+	                            if current_name.eq_ignore_ascii_case(search_name) && !current_icon.is_empty() {
+	                                return Some(current_icon);
+	                            }
+	                        }
+	                    }
+	                }
+	            }
+	        }
+	    }
+	    None
+	}
+
+	pub fn get_icon_from_desktop(desktop_id: &str) -> Option<String> {
+	    let xdg_data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+	    let mut search_paths: Vec<PathBuf> = xdg_data_dirs.split(':').map(|s| Path::new(s).join("applications")).collect();
+	    if let Ok(home) = std::env::var("HOME") { search_paths.insert(0, Path::new(&home).join(".local/share/applications")); }
+
+	    for path in search_paths {
+	        let desktop_path = path.join(format!("{}.desktop", desktop_id));
+	        if desktop_path.exists() {
+	            if let Ok(file) = File::open(desktop_path) {
+	                let reader = BufReader::new(file);
+	                for line in reader.lines().flatten() {
+	                    if line.starts_with("Icon=") {
+	                        return Some(line["Icon=".len()..].trim().to_string());
+	                    }
+	                }
+	            }
+	        }
+	    }
+	    None
+	}
+
+    pub fn extract_icon_name(app_id: &str) -> String {        
+        if let Some(icon) = get_icon_from_desktop(app_id) {
+            return icon;
+        }
+
+        // Try common variations
         let candidates = [
-            format!("{}.desktop", app_id),
             format!("{}.desktop", app_id.to_lowercase()),
             format!("org.gnome.{}.desktop", app_id),
             format!("org.kde.{}.desktop", app_id),
+            format!("com.{}.desktop", app_id),
         ];
+
+        let xdg_data_dirs = std::env::var("XDG_DATA_DIRS").unwrap_or_else(|_| "/usr/local/share:/usr/share".to_string());
+        let mut search_paths: Vec<PathBuf> = xdg_data_dirs.split(':').map(|s| Path::new(s).join("applications")).collect();
+        if let Ok(home) = std::env::var("HOME") { search_paths.insert(0, Path::new(&home).join(".local/share/applications")); }
 
         for path in search_paths {
             for candidate in &candidates {
@@ -90,46 +237,105 @@ pub mod icon_utils {
                 }
             }
         }
+        
+        // Fallback: search by Exec
+        if let Some(resolved_id) = find_desktop_file_by_exec(app_id) {
+            if let Some(icon) = get_icon_from_desktop(&resolved_id) {
+                return icon;
+            }
+        }
+
         app_id.to_string()
     }
 
-    pub fn locate_actual_icon_path(icon_name: &str, app_id: &str) -> Option<PathBuf> {
-        if let Some(icon) = lookup_icon(icon_name).from_theme("hicolor").next().and_then(|res| res.ok()) {
-            return Some(icon.path);
-        }
-        if let Some(icon) = lookup_icon(app_id).from_theme("hicolor").next().and_then(|res| res.ok()) {
-            return Some(icon.path);
-        }
+	// This function performs a recursive depth-first search of a directory tree to locate a specific file by its exact name
+	pub fn find_icon_path(root_dir: &str, target_name: &str) -> Option<PathBuf> {
+	    for entry in WalkDir::new(root_dir).into_iter().filter_map(|e| e.ok()) {
+	        let path = entry.path();
+	        
+	        // Check if the current file stem matches the target (case-insensitive)
+	        if let Some(stem) = path.file_stem().and_then(|n| n.to_str()) {
+	            if stem.eq_ignore_ascii_case(target_name) {
+	                return Some(path.to_path_buf());
+	            }
+	        }
+	    }
+	    None
+	}
 
-        let mut search_roots = vec![PathBuf::from("/usr/share/icons"), PathBuf::from("/usr/share/pixmaps")];
-        if let Ok(home) = std::env::var("HOME") {
-            search_roots.push(Path::new(&home).join(".icons"));
-            search_roots.push(Path::new(&home).join(".local/share/icons"));
-        }
+	/// Parses icon_list.txt generated by your bash script
+	pub fn search_in_icon_list(icon_name: &str) -> Option<PathBuf> {
+	    // Debug: Check where the program is looking
+	    let _current_dir = std::env::current_dir().ok()?;
+	    //eprintln!("DEBUG: Current working directory is: {:?}", current_dir);
+	    
+	    let file_path = "icon_list.txt";
+	    let file = match File::open(file_path) {
+	        Ok(f) => {
+	            //eprintln!("DEBUG: Successfully opened {}", file_path);
+	            f
+	        }
+	        Err(_e) => {
+	            //eprintln!("DEBUG: Failed to open {}: {}", file_path, e);
+	            return None;
+	        }
+	    };
 
-        let target_lower = icon_name.to_lowercase();
-        let app_lower = app_id.to_lowercase();
+	    let reader = BufReader::new(file);
 
-        for root in search_roots {
-            if !root.exists() { continue; }
-            for entry in WalkDir::new(root).follow_links(false).into_iter().filter_map(|e| e.ok()) {
-                let path = entry.path();
-                if path.is_file() {
-                    if let Some(ext) = path.extension().and_then(|s| s.to_str()) {
-                        if ext == "png" || ext == "svg" {
-                            if let Some(file_name) = path.file_name().and_then(|n| n.to_str()) {
-                                let name_lower = file_name.to_lowercase();
-                                if name_lower.contains(&target_lower) || name_lower.contains(&app_lower) {
-                                    return Some(path.to_path_buf());
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-        None
+	    for (_i, line_result) in reader.lines().enumerate() {
+	        let line = match line_result {
+	            Ok(l) => l,
+	            Err(_) => continue,
+	        };
+
+	        // Debug: See what each raw line looks like
+	        //eprintln!("DEBUG: Reading line {}: '{}'", i, line);
+
+	        let parts: Vec<&str> = line.split('|').collect();
+	        
+	        // Debug: See if the split worked as expected
+	        //eprintln!("DEBUG: Line split into parts: {:?}", parts);
+
+	        if let Some(path_str) = parts.get(1) {
+	            let path = Path::new(path_str.trim());
+	            
+	            if let Some(file_name) = path.file_stem().and_then(|n| n.to_str()) {
+	                // Debug: Check what name we are comparing against
+	                //eprintln!("DEBUG: Comparing '{}' with target '{}'", file_name, icon_name);
+	                
+	                if file_name.eq_ignore_ascii_case(icon_name) {
+	                    eprintln!("DEBUG: Match found for '{}'! Returning path: {:?}", icon_name, path);
+	                    return Some(path.to_path_buf());
+	                }
+	            }
+	        }
+	    }
+	    
+	    eprintln!("DEBUG: Finished reading file, no match found.");
+	    None
+	}
+
+
+
+}
+
+// Main icon puller
+pub fn get_icon_path(app_id: &str) -> Option<PathBuf> {
+    let name = icon_utils::extract_icon_name(app_id);
+    
+    // 1. Try hicolor scalable
+    if let Some(path) = icon_utils::find_icon_path("/usr/share/icons/hicolor/scalable/apps", &name) {
+        return Some(path);
     }
+    
+    // 2. Try hicolor 64x64
+    if let Some(path) = icon_utils::find_icon_path("/usr/share/icons/hicolor/64/apps", &name) {
+        return Some(path);
+    }
+    
+    // 3. Fallback to exhaustive search in icon_list.txt
+    icon_utils::search_in_icon_list(&name)
 }
 
 pub mod terminal_graphics {
@@ -158,8 +364,8 @@ pub mod terminal_graphics {
         }
     }
 
-    pub fn generate_terminal_image_string(icon_name: &str, app_id: &str, target_size: u32) -> String {
-        let icon_path = match super::icon_utils::locate_actual_icon_path(icon_name, app_id) {
+    pub fn generate_terminal_image_string(app_id: &str, target_size: u32) -> String {
+        let icon_path = match get_icon_path(app_id) {
             Some(path) => path,
             None => return "📁 [No Icon Found]".to_string(),
         };

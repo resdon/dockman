@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use crate::lib::models::WindowDiagnostics;
+use crate::models::WindowDiagnostics;
 
 use crate::{MenuState, HoverState, FontManager};
 
@@ -79,9 +79,17 @@ pub fn render_windows(
     sorted_windows.sort_by_key(|w| &w.app_name);
     
     for w in sorted_windows {
-        running_by_app.entry(w.app_id.clone()).or_insert_with(Vec::new).push(w);
-        if !apps_in_dock.contains(&w.app_id) {
-            apps_in_dock.push(w.app_id.clone());
+        let app_id = if !w.app_id.is_empty() {
+            w.app_id.clone()
+        } else if !w.title.is_empty() {
+            w.title.clone()
+        } else {
+            "Unknown".to_string()
+        };
+
+        running_by_app.entry(app_id.clone()).or_insert_with(Vec::new).push(w);
+        if !apps_in_dock.contains(&app_id) {
+            apps_in_dock.push(app_id);
         }
     }
 
